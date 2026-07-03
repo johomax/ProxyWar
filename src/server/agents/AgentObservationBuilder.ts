@@ -954,7 +954,7 @@ export class AgentObservationBuilder {
     player: Player,
   ): AgentUpgradeOption[] {
     return player
-      .units(...Structures.types)
+      .units(Structures.types)
       .filter((unit) => player.canUpgradeUnit(unit))
       .sort((a, b) => a.level() - b.level() || a.id() - b.id())
       .slice(0, 8)
@@ -977,7 +977,7 @@ export class AgentObservationBuilder {
       return [];
     }
     return player
-      .units(...Structures.types)
+      .units(Structures.types)
       .filter(
         (unit) =>
           unit.isActive() &&
@@ -1192,7 +1192,7 @@ export class AgentObservationBuilder {
       .sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
 
     for (const enemy of enemies) {
-      for (const unit of enemy.units(...Structures.types)) {
+      for (const unit of enemy.units(Structures.types)) {
         const analysis = this.nukeTargetAnalysis(
           gameState,
           player,
@@ -1246,7 +1246,7 @@ export class AgentObservationBuilder {
     const targetPlayer = owner;
     const targetTiles = targetPlayer.numTilesOwned();
     const targetTileShare = share(targetTiles, gameState.numLandTiles());
-    const targetStructures = targetPlayer.units(...Structures.types);
+    const targetStructures = targetPlayer.units(Structures.types);
     const structure = targetStructures.find((unit) => unit.tile() === tile);
     const structureUnit = structure?.type() ?? null;
     const structureLevel = structure?.level() ?? null;
