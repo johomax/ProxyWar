@@ -1278,6 +1278,9 @@ export class GameView implements GameMap {
   isLand(ref: TileRef): boolean {
     return this._map.isLand(ref);
   }
+  isImpassable(ref: TileRef): boolean {
+    return this._map.isImpassable(ref);
+  }
   isOceanShore(ref: TileRef): boolean {
     return this._map.isOceanShore(ref);
   }
@@ -1328,6 +1331,24 @@ export class GameView implements GameMap {
   }
   neighbors(ref: TileRef): TileRef[] {
     return this._map.neighbors(ref);
+  }
+  forEachNeighbor(ref: TileRef, callback: (neighbor: TileRef) => void): void {
+    this._map.forEachNeighbor(ref, callback);
+  }
+  forEachNeighborNSWE(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void {
+    this._map.forEachNeighborNSWE(ref, callback);
+  }
+  neighbors4(ref: TileRef, out: TileRef[]): number {
+    return this._map.neighbors4(ref, out);
+  }
+  forEachNeighborWithDiag(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void {
+    this._map.forEachNeighborWithDiag(ref, callback);
   }
   isWater(ref: TileRef): boolean {
     return this._map.isWater(ref);

@@ -15,6 +15,7 @@ export interface GameMap {
   isValidCoord(x: number, y: number): boolean;
   // Terrain getters
   isLand(ref: TileRef): boolean;
+  isImpassable(ref: TileRef): boolean;
   isOceanShore(ref: TileRef): boolean;
   isOcean(ref: TileRef): boolean;
   isShoreline(ref: TileRef): boolean;
@@ -36,6 +37,26 @@ export interface GameMap {
   isOnEdgeOfMap(ref: TileRef): boolean;
   isBorder(ref: TileRef): boolean;
   neighbors(ref: TileRef): TileRef[];
+  // Zero-allocation neighbor iteration (cardinal only), in W, E, N, S order.
+  forEachNeighbor(ref: TileRef, callback: (neighbor: TileRef) => void): void;
+  // Zero-allocation neighbor iteration (cardinal only) in the same N, S, W, E
+  // order as neighbors(). Use this in order-sensitive code — anything feeding
+  // sets/arrays whose iteration order affects the simulation — where
+  // forEachNeighbor's W, E, N, S order would change behavior.
+  forEachNeighborNSWE(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void;
+  // Writes the cardinal neighbors of ref into out (W, E, N, S order) and
+  // returns the count. out must have length >= 4; reuse it across calls to
+  // avoid allocation in hot loops.
+  neighbors4(ref: TileRef, out: TileRef[]): number;
+  // Zero-allocation neighbor iteration including diagonals, in dx-major
+  // order: (-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1).
+  forEachNeighborWithDiag(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void;
   isWater(ref: TileRef): boolean;
   isLake(ref: TileRef): boolean;
   isShore(ref: TileRef): boolean;
@@ -94,6 +115,11 @@ export class GameMapImpl implements GameMap {
   private static readonly SHORELINE_BIT = 6;
   private static readonly OCEAN_BIT = 5;
   private static readonly MAGNITUDE_MASK = 0x1f; // 11111 in binary
+  // Land tiles with magnitude == IMPASSABLE_MAGNITUDE are impassable terrain:
+  // solid ground that cannot be owned, attacked, or nuked. The shared map
+  // generator historically never produced magnitude 31, so existing maps have
+  // no impassable tiles.
+  private static readonly IMPASSABLE_MAGNITUDE = 31;
 
   // State bits (Uint16Array)
   private static readonly PLAYER_ID_MASK = 0xfff;
@@ -169,6 +195,14 @@ export class GameMapImpl implements GameMap {
   // Terrain getters (immutable)
   isLand(ref: TileRef): boolean {
     return Boolean(this.terrain[ref] & (1 << GameMapImpl.IS_LAND_BIT));
+  }
+
+  isImpassable(ref: TileRef): boolean {
+    return (
+      this.isLand(ref) &&
+      (this.terrain[ref] & GameMapImpl.MAGNITUDE_MASK) ===
+        GameMapImpl.IMPASSABLE_MAGNITUDE
+    );
   }
 
   isOceanShore(ref: TileRef): boolean {
@@ -323,6 +357,64 @@ export class GameMapImpl implements GameMap {
     return neighbors;
   }
 
+  forEachNeighbor(ref: TileRef, callback: (neighbor: TileRef) => void): void {
+    const w = this.width_;
+    const x = ref % w;
+
+    if (x !== 0) callback(ref - 1);
+    if (x !== w - 1) callback(ref + 1);
+    if (ref >= w) callback(ref - w);
+    if (ref < (this.height_ - 1) * w) callback(ref + w);
+  }
+
+  forEachNeighborNSWE(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void {
+    const w = this.width_;
+    const x = ref % w;
+
+    if (ref >= w) callback(ref - w);
+    if (ref < (this.height_ - 1) * w) callback(ref + w);
+    if (x !== 0) callback(ref - 1);
+    if (x !== w - 1) callback(ref + 1);
+  }
+
+  neighbors4(ref: TileRef, out: TileRef[]): number {
+    const w = this.width_;
+    const x = ref % w;
+    let n = 0;
+
+    if (x !== 0) out[n++] = ref - 1;
+    if (x !== w - 1) out[n++] = ref + 1;
+    if (ref >= w) out[n++] = ref - w;
+    if (ref < (this.height_ - 1) * w) out[n++] = ref + w;
+    return n;
+  }
+
+  forEachNeighborWithDiag(
+    ref: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void {
+    const w = this.width_;
+    const x = ref % w;
+    const hasN = ref >= w;
+    const hasS = ref < (this.height_ - 1) * w;
+
+    if (x !== 0) {
+      if (hasN) callback(ref - 1 - w);
+      callback(ref - 1);
+      if (hasS) callback(ref - 1 + w);
+    }
+    if (hasN) callback(ref - w);
+    if (hasS) callback(ref + w);
+    if (x !== w - 1) {
+      if (hasN) callback(ref + 1 - w);
+      callback(ref + 1);
+      if (hasS) callback(ref + 1 + w);
+    }
+  }
+
   forEachTile(fn: (tile: TileRef) => void): void {
     for (let ref: TileRef = 0; ref < this.width_ * this.height_; ref++) {
       fn(ref);
@@ -373,15 +465,24 @@ export class GameMapImpl implements GameMap {
       q.push(tile);
     }
 
+    // Neighbors are enumerated inline in the same order as neighbors() to
+    // avoid allocating an array per visited tile.
+    const w = this.width_;
+    const southLimit = (this.height_ - 1) * w;
+    const visit = (n: TileRef) => {
+      if (!seen.has(n) && filter(this, n)) {
+        seen.add(n);
+        q.push(n);
+      }
+    };
     while (q.length > 0) {
       const curr = q.pop();
       if (curr === undefined) continue;
-      for (const n of this.neighbors(curr)) {
-        if (!seen.has(n) && filter(this, n)) {
-          seen.add(n);
-          q.push(n);
-        }
-      }
+      const x = curr % w;
+      if (curr >= w) visit(curr - w);
+      if (curr < southLimit) visit(curr + w);
+      if (x !== 0) visit(curr - 1);
+      if (x !== w - 1) visit(curr + 1);
     }
     return seen;
   }

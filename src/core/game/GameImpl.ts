@@ -1058,6 +1058,9 @@ export class GameImpl implements Game {
   isLand(ref: TileRef): boolean {
     return this._map.isLand(ref);
   }
+  isImpassable(ref: TileRef): boolean {
+    return this._map.isImpassable(ref);
+  }
   isOceanShore(ref: TileRef): boolean {
     return this._map.isOceanShore(ref);
   }
@@ -1105,12 +1108,16 @@ export class GameImpl implements Game {
   }
   // Zero-allocation neighbor iteration (cardinal only)
   forEachNeighbor(tile: TileRef, callback: (neighbor: TileRef) => void): void {
-    const x = this.x(tile);
-    const y = this.y(tile);
-    if (x > 0) callback(this._map.ref(x - 1, y));
-    if (x + 1 < this._width) callback(this._map.ref(x + 1, y));
-    if (y > 0) callback(this._map.ref(x, y - 1));
-    if (y + 1 < this._height) callback(this._map.ref(x, y + 1));
+    this._map.forEachNeighbor(tile, callback);
+  }
+  forEachNeighborNSWE(
+    tile: TileRef,
+    callback: (neighbor: TileRef) => void,
+  ): void {
+    this._map.forEachNeighborNSWE(tile, callback);
+  }
+  neighbors4(ref: TileRef, out: TileRef[]): number {
+    return this._map.neighbors4(ref, out);
   }
   isWater(ref: TileRef): boolean {
     return this._map.isWater(ref);
