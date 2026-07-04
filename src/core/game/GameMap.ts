@@ -98,11 +98,12 @@ export class GameMapImpl implements GameMap {
   private readonly width_: number;
   private readonly height_: number;
 
-  // Tile refs are row-major (ref = y * width + x), so coordinates are pure
-  // arithmetic. The former refToX/refToY/yToRef lookup tables cost ~16 MB per
-  // million tiles per map instance (plain JS number arrays) — on World-scale
-  // maps that was the single largest fixed allocation in the game process.
-  private readonly numTiles_: number;
+  // Row-start ref per y, so ref(x, y) avoids a multiply. x/y are derived from
+  // a ref arithmetically (ref % width, ref / width) rather than via per-tile
+  // lookup tables — two Uint16 tables cost 4 bytes per tile (~32 MB on the
+  // largest maps) and their random-access reads miss cache more often than
+  // the division costs.
+  private readonly yToRef: Int32Array;
 
   // Terrain bits (Uint8Array)
   private static readonly IS_LAND_BIT = 7;
@@ -136,7 +137,10 @@ export class GameMapImpl implements GameMap {
     this.height_ = height;
     this.terrain = terrainData;
     this.state = new Uint16Array(width * height);
-    this.numTiles_ = width * height;
+    this.yToRef = new Int32Array(height);
+    for (let y = 0; y < height; y++) {
+      this.yToRef[y] = y * width;
+    }
   }
   numTilesWithFallout(): number {
     return this._numTilesWithFallout;
@@ -146,11 +150,11 @@ export class GameMapImpl implements GameMap {
     if (!this.isValidCoord(x, y)) {
       throw new Error(`Invalid coordinates: ${x},${y}`);
     }
-    return y * this.width_ + x;
+    return this.yToRef[y] + x;
   }
 
   isValidRef(ref: TileRef): boolean {
-    return ref >= 0 && ref < this.numTiles_;
+    return ref >= 0 && ref < this.width_ * this.height_;
   }
 
   x(ref: TileRef): number {
@@ -158,7 +162,7 @@ export class GameMapImpl implements GameMap {
   }
 
   y(ref: TileRef): number {
-    return Math.floor(ref / this.width_);
+    return (ref / this.width_) | 0;
   }
 
   cell(ref: TileRef): Cell {
@@ -200,9 +204,16 @@ export class GameMapImpl implements GameMap {
   }
 
   isOceanShore(ref: TileRef): boolean {
-    return (
-      this.isLand(ref) && this.neighbors(ref).some((tr) => this.isOcean(tr))
-    );
+    if (!this.isLand(ref)) {
+      return false;
+    }
+    const w = this.width_;
+    const x = ref % w;
+    if (x !== 0 && this.isOcean(ref - 1)) return true;
+    if (x !== w - 1 && this.isOcean(ref + 1)) return true;
+    if (ref >= w && this.isOcean(ref - w)) return true;
+    if (ref < (this.height_ - 1) * w && this.isOcean(ref + w)) return true;
+    return false;
   }
 
   isOcean(ref: TileRef): boolean {
@@ -292,9 +303,16 @@ export class GameMapImpl implements GameMap {
   }
 
   isBorder(ref: TileRef): boolean {
-    return this.neighbors(ref).some(
-      (tr) => this.ownerID(tr) !== this.ownerID(ref),
-    );
+    const w = this.width_;
+    const x = ref % w;
+    const owner = this.ownerID(ref);
+    if (x !== 0 && this.ownerID(ref - 1) !== owner) return true;
+    if (x !== w - 1 && this.ownerID(ref + 1) !== owner) return true;
+    if (ref >= w && this.ownerID(ref - w) !== owner) return true;
+    if (ref < (this.height_ - 1) * w && this.ownerID(ref + w) !== owner) {
+      return true;
+    }
+    return false;
   }
 
   hasDefenseBonus(ref: TileRef): boolean {

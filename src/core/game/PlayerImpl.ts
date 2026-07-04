@@ -50,6 +50,7 @@ import {
   GameUpdateType,
   PlayerUpdate,
 } from "./GameUpdates";
+import { ReadonlyTileSet, TileSet } from "./TileSet";
 import {
   bestShoreDeploymentSource,
   canBuildTransportShip,
@@ -82,10 +83,10 @@ export class PlayerImpl implements Player {
 
   private embargoes = new Map<PlayerID, Embargo>();
 
-  public _borderTiles: Set<TileRef> = new Set();
+  public _borderTiles = new TileSet();
 
   public _units: Unit[] = [];
-  public _tiles: Set<TileRef> = new Set();
+  public _tiles = new TileSet();
 
   public pastOutgoingAllianceRequests: AllianceRequest[] = [];
   private _expiredAlliances: Alliance[] = [];
@@ -330,7 +331,7 @@ export class PlayerImpl implements Player {
     return new Set(this._tiles.values()) as Set<TileRef>;
   }
 
-  borderTiles(): ReadonlySet<TileRef> {
+  borderTiles(): ReadonlyTileSet {
     return this._borderTiles;
   }
 
