@@ -44,7 +44,7 @@ export class PathFinderBuilder<T> {
   /**
    * Build and wrap with PathFinderStepper for step-by-step traversal.
    */
-  buildWithStepper(config: StepperConfig<T>): SteppingPathFinder<T> {
+  buildWithStepper(config: StepperConfig<T>): PathFinderStepper<T> {
     return new PathFinderStepper(this.build(), config);
   }
 }

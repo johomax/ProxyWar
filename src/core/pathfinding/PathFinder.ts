@@ -10,7 +10,7 @@ import {
 } from "./PathFinder.Parabola";
 import { StationPathFinder } from "./PathFinder.Station";
 import { PathFinderBuilder } from "./PathFinderBuilder";
-import { StepperConfig } from "./PathFinderStepper";
+import { PathFinderStepper, StepperConfig } from "./PathFinderStepper";
 import { ComponentCheckTransformer } from "./transformers/ComponentCheckTransformer";
 import { MiniMapTransformer } from "./transformers/MiniMapTransformer";
 import { ShoreCoercingTransformer } from "./transformers/ShoreCoercingTransformer";
@@ -33,7 +33,7 @@ export class UniversalPathFinding {
  * Pathfinders that require Game - simulation layer only
  */
 export class PathFinding {
-  static Water(game: Game): SteppingPathFinder<TileRef> {
+  static Water(game: Game): PathFinderStepper<TileRef> {
     const pf = game.miniWaterHPA();
     const graph = game.miniWaterGraph();
 
@@ -52,7 +52,7 @@ export class PathFinding {
       .buildWithStepper(tileStepperConfig(game));
   }
 
-  static WaterSimple(game: Game): SteppingPathFinder<TileRef> {
+  static WaterSimple(game: Game): PathFinderStepper<TileRef> {
     const miniMap = game.miniMap();
     const pf = new AStarWater(miniMap);
 
@@ -94,7 +94,7 @@ export class PathFinding {
  * Wraps SteppingPathFinder and tracks waterGraphVersion internally.
  */
 export class WaterPathFinder implements SteppingPathFinder<TileRef> {
-  private inner: SteppingPathFinder<TileRef>;
+  private inner: PathFinderStepper<TileRef>;
   private _waterGraphVersion: number;
   private _rebuilt = false;
 
@@ -154,9 +154,23 @@ export class WaterPathFinder implements SteppingPathFinder<TileRef> {
     return this.inner.next(from, to, dist);
   }
 
+  /** Runs a one-shot query without changing the path consumed by next(). */
   findPath(from: TileRef | TileRef[], to: TileRef): TileRef[] | null {
     this.ensureFresh();
     return this.inner.findPath(from, to);
+  }
+
+  /**
+   * Returns the route following a successful next() call, starting at `from`.
+   * If refreshing the water graph replaced the stepper, fall back to the same
+   * one-shot query used before traversal paths were reusable.
+   */
+  pathForTraversal(from: TileRef, to: TileRef): TileRef[] | Uint32Array {
+    this.ensureFresh();
+    const path =
+      this.inner.pathAfterNext() ?? this.inner.findPath(from, to);
+    if (path === null || path.length === 0) return [from];
+    return path[0] === from ? path : [from, ...path];
   }
 
   invalidate(): void {
