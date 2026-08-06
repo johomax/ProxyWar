@@ -7,7 +7,7 @@ import {
   Structures,
   UnitType,
 } from "../game/Game";
-import { GameMap, TileRef } from "../game/GameMap";
+import { TileRef } from "../game/GameMap";
 import {
   bumpTraversalGeneration,
   tileTraversalScratch,

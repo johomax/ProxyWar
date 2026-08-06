@@ -1,6 +1,6 @@
 import { DebugSpan } from "../utilities/DebugSpan";
 import { PathFinderStepper, StepperConfig } from "./PathFinderStepper";
-import { PathFinder, SteppingPathFinder } from "./types";
+import { PathFinder } from "./types";
 
 type WrapFactory<T> = (pf: PathFinder<T>) => PathFinder<T>;
 

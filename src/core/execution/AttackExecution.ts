@@ -367,7 +367,9 @@ export class AttackExecution implements Execution {
 
     this.mg.conquerPlayer(this._owner, target);
 
-    for (let i = 0; i < 10; i++) {
+    const MAX_PASSES = 100;
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      let progressed = false;
       for (const tile of target.tiles()) {
         let borders = false;
         this.mg.forEachNeighbor(tile, (t) => {
@@ -377,6 +379,7 @@ export class AttackExecution implements Execution {
         });
         if (borders) {
           this._owner.conquer(tile);
+          progressed = true;
         } else {
           let captured = false;
           this.mg.forEachNeighbor(tile, (neighbor) => {
@@ -387,8 +390,10 @@ export class AttackExecution implements Execution {
               captured = true;
             }
           });
+          if (captured) progressed = true;
         }
       }
+      if (!progressed) break;
     }
   }
 
