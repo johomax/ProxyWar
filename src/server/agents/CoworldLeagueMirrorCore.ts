@@ -92,8 +92,6 @@ export interface CoworldLeagueSummary {
   id: string;
   name: string;
   description: string | null;
-  roundIntervalMinutes: number | null;
-  episodesPerRound: number | null;
 }
 
 export function parseLeagueSummary(
@@ -107,18 +105,50 @@ export function parseLeagueSummary(
   if (id === null) {
     return null;
   }
-  const commissionerConfig = asRecord(league.commissioner_config);
-  const stages = asArray(commissionerConfig?.stages);
-  const firstStage = asRecord(stages[0]);
   return {
     id,
     name: asString(league.name) ?? "Coworld league",
     description: asString(league.description),
-    roundIntervalMinutes: asNumber(
-      commissionerConfig?.schedule_interval_minutes,
-    ),
-    episodesPerRound: asNumber(firstStage?.num_episodes),
   };
+}
+
+/**
+ * Observed round cadence in whole minutes: the median gap between consecutive
+ * rounds' `created_at` stamps in the same raw rounds list the round table is
+ * built from. The configured cadence is not publicly readable under the
+ * platform commissioner (`commissioner_config` is a container-only column,
+ * null on platform leagues), and observed history is the honest number under
+ * either owner. Median, not mean, so one pause or outage gap doesn't inflate
+ * the figure. Null below two gaps or when the median rounds to under a minute.
+ */
+export function observedRoundCadenceMinutes(value: unknown): number | null {
+  const createdTimes: number[] = [];
+  for (const entry of asArray(value)) {
+    const round = asRecord(entry);
+    const createdAt = Date.parse(asString(round?.created_at) ?? "");
+    if (Number.isFinite(createdAt)) {
+      createdTimes.push(createdAt);
+    }
+  }
+  createdTimes.sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let index = 1; index < createdTimes.length; index++) {
+    const gap = createdTimes[index] - createdTimes[index - 1];
+    if (gap > 0) {
+      gaps.push(gap);
+    }
+  }
+  if (gaps.length < 2) {
+    return null;
+  }
+  gaps.sort((a, b) => a - b);
+  const middle = Math.floor(gaps.length / 2);
+  const median =
+    gaps.length % 2 === 1
+      ? gaps[middle]
+      : (gaps[middle - 1] + gaps[middle]) / 2;
+  const minutes = Math.round(median / 60_000);
+  return minutes >= 1 ? minutes : null;
 }
 
 export function pickCompetitionDivision(

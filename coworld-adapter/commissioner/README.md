@@ -1,5 +1,13 @@
 # ProxyWar commissioner
 
+> **Deprecated — the league is migrating to the Softmax platform commissioner.** Container
+> (Docker) commissioners are closed to new use platform-wide, and the platform ladder now
+> expresses this league's shape natively (`scaling_roster` seat rungs + per-rung map pools).
+> The cutover package — target ladder settings, knob mapping, accepted behavior changes —
+> is [`PLATFORM_MIGRATION.md`](PLATFORM_MIGRATION.md). This image, its config, and the
+> manifest's commissioner runnable stay in the repo for rollback until the platform deletes
+> the container path entirely.
+
 Standalone ProxyWar tournament commissioner: the `ruleset_strategy` framework (vendored from
 `Metta-AI/coworld-tools` `commissioners/`) plus two custom pieces in `ProxyWarCommissioner`,
 `proxywar_app.py`.

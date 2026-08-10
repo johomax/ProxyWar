@@ -12,6 +12,7 @@ import {
   deriveSpectatorTelemetryFromDecisionsLog,
   mapNameFromVariant,
   mergeEpisodeRows,
+  observedRoundCadenceMinutes,
   parseCompletedEpisodeMetaList,
   parseCuratedDramaScore,
   parseHostedReplayPayload,
@@ -32,14 +33,14 @@ import {
 import type { LatestPremierePointer } from "../../src/server/agents/CoworldLeaguePremiereSuppression";
 import { derivePremiereId } from "../../src/server/replay-premiere/ReplayPremiereLoopCore";
 
+// Platform-commissioner league shape: commissioner_config is container-only
+// and null once the league is platform-owned.
 const leagueFixture = {
   id: "league_test",
   name: "Proxywar",
   description: "Test league",
-  commissioner_config: {
-    stages: [{ label: "Round", num_episodes: 8 }],
-    schedule_interval_minutes: 30,
-  },
+  commissioner_key: "platform",
+  commissioner_config: null,
 };
 
 const divisionsFixture = [
@@ -217,12 +218,48 @@ const replayPayloadFixture = {
 };
 
 describe("CoworldLeagueMirrorCore", () => {
-  test("parseLeagueSummary extracts cadence and episode counts", () => {
+  test("parseLeagueSummary extracts league identity", () => {
     const league = parseLeagueSummary(leagueFixture);
     expect(league).not.toBeNull();
-    expect(league?.roundIntervalMinutes).toBe(30);
-    expect(league?.episodesPerRound).toBe(8);
+    expect(league?.id).toBe("league_test");
     expect(league?.name).toBe("Proxywar");
+    expect(league?.description).toBe("Test league");
+  });
+
+  test("observedRoundCadenceMinutes takes the median of created_at gaps", () => {
+    const rounds = [0, 30, 60, 90, 120].map((minutes, index) => ({
+      id: `round_${index}`,
+      round_number: index + 1,
+      created_at: new Date(minutes * 60_000).toISOString(),
+    }));
+    expect(observedRoundCadenceMinutes(rounds)).toBe(30);
+  });
+
+  test("observedRoundCadenceMinutes shrugs off one outage-sized gap", () => {
+    const rounds = [0, 30, 60, 420, 450, 480].map((minutes, index) => ({
+      id: `round_${index}`,
+      round_number: index + 1,
+      created_at: new Date(minutes * 60_000).toISOString(),
+    }));
+    expect(observedRoundCadenceMinutes(rounds)).toBe(30);
+  });
+
+  test("observedRoundCadenceMinutes needs at least two gaps", () => {
+    expect(observedRoundCadenceMinutes([])).toBeNull();
+    expect(
+      observedRoundCadenceMinutes([
+        { created_at: "2026-07-13T10:00:00Z" },
+        { created_at: "2026-07-13T10:30:00Z" },
+      ]),
+    ).toBeNull();
+    expect(
+      observedRoundCadenceMinutes([
+        { created_at: "not a date" },
+        { created_at: "2026-07-13T10:00:00Z" },
+        { created_at: "2026-07-13T10:30:00Z" },
+        { created_at: "2026-07-13T11:00:00Z" },
+      ]),
+    ).toBe(30);
   });
 
   test("pickCompetitionDivision prefers the populated top-level division", () => {

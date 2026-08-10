@@ -34,6 +34,7 @@ import {
   buildRoundRows,
   buildStandingRows,
   mergeEpisodeRows,
+  observedRoundCadenceMinutes,
   parseCompletedEpisodeMetaList,
   parseCuratedDramaScore,
   parseHostedReplayPayload,
@@ -1260,8 +1261,12 @@ async function syncOnce(options: MirrorOptions): Promise<void> {
       name: league.name,
       description: league.description,
       divisionName: division.name,
-      roundIntervalMinutes: league.roundIntervalMinutes,
-      episodesPerRound: league.episodesPerRound,
+      // Cadence is observed from round history, not read from commissioner
+      // config: the platform commissioner exposes no configured interval, and
+      // rounds under it size to the live roster, so a fixed per-round episode
+      // count no longer exists either.
+      roundIntervalMinutes: observedRoundCadenceMinutes(roundsRaw),
+      episodesPerRound: null,
       currentRoundNumber: rounds[0]?.roundNumber ?? null,
       currentRoundStatus: rounds[0]?.status ?? null,
       scoreLabel: scoreLabelFromStandings(standingsRaw),
