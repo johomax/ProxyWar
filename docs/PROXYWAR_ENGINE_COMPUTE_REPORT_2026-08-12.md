@@ -19,11 +19,12 @@ is `AgentObservationBuilder.build`, and inside it two searches:
 process CPU) and `boatOptions` → `neutralIslandTransportTiles` →
 `canBuildTransportShip` (~23%).
 
-The spectator-snapshot build skipping on
-`claude/engine-compute-perf-large-maps-skj9qk` saves **0.05%** of the measured
-80-step episode and a projected **≤0.6%** of a full hosted round. It is a real
-saving and it is not a round-time lever; it remains what it was built as, a
-memory/OOM fix.
+A/B'd against `main` (664fe47) on identical configs, the spectator-snapshot
+build skipping on this branch saves a measured **0.50 s of snapshot build time
+per 80-step episode (0.07%)**, and a projected **0.2–0.6%** of a full hosted
+round. Total wall clock came out 1.4% lower on the branch, but that gap sits
+inside this machine's run-to-run spread. It is a real saving and it is not a
+round-time lever; it remains what it was built as, a memory/OOM fix.
 
 ## How this was measured
 
@@ -137,10 +138,11 @@ Read plainly: every decision step re-derives, for every living seat, where that
 seat could put a structure and where it could land a boat, by searching the
 map. That search — not the game — is the episode.
 
-## Result 4: what the snapshot change buys
+## Result 4: what the snapshot change buys (A/B vs main)
 
 `CoworldSnapshotRetention` decides before building whether a step's spectator
 frame will be retained, so unretained steps skip an O(all-owned-tiles) build.
+Skip ratio grows with episode length:
 
 | Snapshot steps | Builds | Skipped | Skipped % |
 | -------------: | -----: | ------: | --------: |
@@ -148,14 +150,37 @@ frame will be retained, so unretained steps skip an O(all-owned-tiles) build.
 |            301 |    111 |     190 |     63.1% |
 |            501 |    129 |     372 |     74.3% |
 
-Measured on the 80-step World run: 16 skipped builds at a mean build cost of
-18.4 ms ≈ **0.3 s saved out of 664.4 s (0.05%)**.
+Direct A/B, `main` (664fe47, build-every-step-then-decimate) against this
+branch, same config file, same game identity, `[PERF]` ported onto main so both
+sides report the same split, runs interleaved MAIN / BRANCH / MAIN / BRANCH on
+an otherwise idle box:
 
-Projected to the full 500-step hosted round: 372 skipped builds. At the 18 ms
-mean measured at step 80 that is ~6.9 s; even assuming builds triple to ~60 ms
-as territory matures, ~22 s — **≤0.6% of an episode that is already at its
-3,600 s cap**. The skip ratio is high (74%) and the thing being skipped is
-cheap relative to what the same step spends in `AgentObservationBuilder`.
+| Run      | Wall (s) | Snapshot builds | Snapshot time (s) | Mean build (ms) |
+| -------- | -------: | --------------: | ----------------: | --------------: |
+| MAIN     |    668.4 |           81/81 |               1.6 |            19.6 |
+| BRANCH   |    668.0 |           65/81 |               1.1 |            17.6 |
+| MAIN 2   |    680.6 |           81/81 |               1.6 |            19.9 |
+| BRANCH 2 |    662.1 |           65/81 |               1.1 |            16.6 |
+
+- **Snapshot build time: 1.6 s → 1.1 s, a 0.50 s saving, 0.07% of the
+  episode.** Reproduced exactly on both pairs. This is the change's direct,
+  resolvable effect.
+- **Wall clock: main 674.5 s (668.4–680.6) vs branch 665.0 s (662.1–668.0), a
+  9.5 s / 1.4% apparent gap.** Both main runs did land above every branch run
+  (including a third branch run at 664.4 s), so the ordering is consistent —
+  but the ranges overlap and n=5 cannot separate a 1.4% effect from this
+  machine's ±1–2% run-to-run spread. Anything beyond the measured 0.50 s
+  (allocation churn from 16 extra tile-set materializations) is unproven.
+
+Projected to the full 500-step hosted round: 372 skipped builds at the ~20 ms
+mean measured at depth 80 is ~7.4 s; even if builds triple to ~60 ms as
+territory matures, ~22 s — **0.2–0.6% of an episode that is already at its
+3,600 s cap.**
+
+The A/B says nothing reliable about memory: these `[MEM]` samples are not
+post-GC (`PROXYWAR_MEM_TELEMETRY_FORCE_GC` was off), so end-of-episode
+`heapUsedMB` of 251 on one main run and 82 on the other is allocator sawtooth,
+not live set. `npm run gate:memory` is the instrument for that claim.
 
 ## Result 5: the hosted round budget
 
