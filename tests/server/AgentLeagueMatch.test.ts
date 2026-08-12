@@ -57,7 +57,10 @@ import {
   createDefaultAgentSpecs,
 } from "../../src/server/agents/AgentLeagueMatch";
 import { AgentLocalGameMirror } from "../../src/server/agents/AgentLocalGameMirror";
-import { runAgentStepLockedLeague } from "../../src/server/agents/AgentStepLockedLeague";
+import {
+  AgentStepLockedStepTiming,
+  runAgentStepLockedLeague,
+} from "../../src/server/agents/AgentStepLockedLeague";
 import { LlmAgentBrain } from "../../src/server/agents/LlmAgentBrain";
 import {
   buildSpawnLegalAction,
@@ -66,6 +69,7 @@ import {
 import { MockLlmProvider } from "../../src/server/agents/MockLlmProvider";
 import {
   AgentDecision,
+  AgentDecisionRecord,
   LegalAction,
 } from "../../src/server/agents/AgentTypes";
 import { GameServer } from "../../src/server/GameServer";
@@ -1758,6 +1762,79 @@ describe("AgentLeagueMatchRunner", () => {
       await game.end({ archive: false });
     }
   }, 600_000);
+
+  it("reports a per-step wall-clock split separating brain wait from engine work", async () => {
+    const log = makeLogger();
+    const activeGame = {
+      inSpawnPhase: () => false,
+      getWinner: () => null,
+      ticks: () => 10,
+      playerByClientID: () => null,
+    } as unknown as Game;
+    const sleep = (ms: number) =>
+      new Promise((resolve) => setTimeout(resolve, ms));
+    const game = {
+      advanceTurnsForTesting: vi.fn(),
+    } as unknown as GameServer;
+    const mirror = {
+      ingest: vi.fn(async () => {
+        await sleep(20);
+        return 0;
+      }),
+      gameState: vi.fn(() => activeGame),
+      turnCount: vi.fn(() => 50),
+      pendingTurns: vi.fn(() => 0),
+    } as unknown as AgentLocalGameMirror;
+    const league = {
+      runOpeningTurn: vi.fn(async () => []),
+      runSpawnPhase: vi.fn(async () => []),
+      // Two seats deciding in parallel: the step waits on the slower one.
+      runDecisionTurn: vi.fn(async () => {
+        await sleep(40);
+        return [
+          {
+            decisionLatencyMs: 10,
+            clientID: null,
+            intent: null,
+            result: { accepted: false },
+          },
+          {
+            decisionLatencyMs: 30,
+            clientID: null,
+            intent: null,
+            result: { accepted: false },
+          },
+        ] as unknown as AgentDecisionRecord[];
+      }),
+    } as unknown as AgentLeagueMatchRunner;
+
+    const timings: AgentStepLockedStepTiming[] = [];
+    await runAgentStepLockedLeague({
+      league,
+      game,
+      mirror,
+      messages: () => [],
+      config: {
+        turnsPerDecisionStep: 25,
+        maxSteps: 2,
+        maxSpawnAdvanceTurns: 2_000,
+        maxDecisionMs: 1_000,
+        waitForMirrorCatchup: false,
+      },
+      onStepTiming: (timing) => timings.push(timing),
+      log,
+    });
+
+    expect(timings.map((timing) => timing.step)).toEqual([1, 2]);
+    for (const timing of timings) {
+      expect(timing.turnNumber).toBe(50);
+      // The slowest seat, not the sum of both.
+      expect(timing.brainWaitMs).toBe(30);
+      expect(timing.decisionMs).toBeGreaterThanOrEqual(30);
+      expect(timing.mirrorMs).toBeGreaterThanOrEqual(10);
+      expect(timing.simMs).toBeGreaterThanOrEqual(0);
+    }
+  });
 
   it("fails winner-required step-locked runs that hit the fail-safe without a winner", async () => {
     const log = makeLogger();

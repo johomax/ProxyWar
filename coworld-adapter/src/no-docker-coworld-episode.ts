@@ -15,6 +15,11 @@ import {
 } from "./coworld-appshell.ts";
 import { episodeIndexFromConfig } from "./coworld-episode-index.ts";
 import {
+  CoworldEpisodePerf,
+  coworldEpisodePerfLine,
+  type StepTimingInput,
+} from "./coworld-episode-perf.ts";
+import {
   coworldResults,
   resolveWinnerSlot,
   type CoworldResults,
@@ -922,6 +927,11 @@ async function runProxyWarEpisode(
     selectedGameConfig,
   );
   const startedAt = Date.now();
+  // Wall-clock attribution ([PERF], sibling of the [MEM] telemetry below):
+  // hosted round times are read as "the policies are slow", and this is the
+  // line that says how much of a round the engine itself spent computing.
+  const perf = new CoworldEpisodePerf();
+  const perfStartedAt = performance.now();
   const mapLoader = new StaticMapLoader();
   // cache:false — this process runs exactly one game, so the module-level map
   // cache would only retain a dead master copy. The single parsed dataset
@@ -974,6 +984,17 @@ async function runProxyWarEpisode(
     COWORLD_MAX_RETAINED_SNAPSHOTS,
   );
   const spectatorSnapshots = snapshotRetention.snapshots;
+  let perfSetupRecorded = false;
+  // Every spectator frame build goes through here — the step loop's, the live
+  // viewer refresher's, and finalize()'s — so [PERF] counts them all.
+  const buildTimedSpectatorSnapshot = (snapshot: SnapshotStepInput) => {
+    const buildStartedAt = performance.now();
+    try {
+      return modules.buildAgentSpectatorSnapshot({ ...snapshot, roster });
+    } finally {
+      perf.noteSnapshotBuild(performance.now() - buildStartedAt);
+    }
+  };
   // A /global viewer connecting mid-stride would otherwise be greeted with a
   // frame up to stride-1 steps stale: build the newest step's frame on
   // connect (no-op while frames are already flowing). Safe to build here —
@@ -984,6 +1005,11 @@ async function runProxyWarEpisode(
       protocolServer.recordSnapshot(frame);
     }
   });
+  // [PERF] progress cadence in decision steps (the summary always prints).
+  const perfEvery = Math.max(
+    1,
+    Number(process.env.PROXYWAR_PERF_TELEMETRY_EVERY ?? "25"),
+  );
   let memTelemetrySnapshots = 0;
   // stderr, NOT the winston logger: the episode logger is level "warn", and pod
   // log retrieval is the whole point — this is the hosted OOM/crash forensics line.
@@ -1050,6 +1076,22 @@ async function runProxyWarEpisode(
         requireWinner: false,
         waitForMirrorCatchup: true,
       },
+      onStepTiming: (timing: StepTimingInput) => {
+        perf.noteStep(timing);
+        // Same reasoning as the [MEM] cadence: a hosted episode killed by a
+        // timeout still has to leave its attribution in the pod log.
+        if (timing.step % perfEvery === 0) {
+          console.error(
+            coworldEpisodePerfLine(
+              "progress",
+              perf.summary({
+                wallMs: performance.now() - perfStartedAt,
+                turns: timing.turnNumber,
+              }),
+            ),
+          );
+        }
+      },
       onSnapshot: (snapshot: SnapshotStepInput) => {
         // /global's snapshotCount stays an episode-progress heartbeat (one
         // per decision step) even when the frame build below is skipped.
@@ -1063,8 +1105,15 @@ async function runProxyWarEpisode(
         // (message-derived game-record) and the result scores are unaffected.
         // Unretained steps skip the O(all-owned-tiles) snapshot build too
         // unless a /global spectator is watching live.
+        if (!perfSetupRecorded) {
+          // Everything before the first frame: map load, spawn candidates,
+          // the spawn phase itself.
+          perf.noteSetup(performance.now() - perfStartedAt);
+          perfSetupRecorded = true;
+        }
+        perf.noteSnapshotStep();
         const frame = snapshotRetention.step(
-          () => modules.buildAgentSpectatorSnapshot({ ...snapshot, roster }),
+          () => buildTimedSpectatorSnapshot(snapshot),
           protocolServer.hasSpectators(),
         );
         if (frame !== null) {
@@ -1097,6 +1146,15 @@ async function runProxyWarEpisode(
     const completedAt = Date.now();
     clearInterval(memTelemetryTimer);
     logMemTelemetry("episode-complete", mirror.turnCount());
+    console.error(
+      coworldEpisodePerfLine(
+        "episode-complete",
+        perf.summary({
+          wallMs: performance.now() - perfStartedAt,
+          turns: mirror.turnCount(),
+        }),
+      ),
+    );
     const finalState = finalKnownState({
       participants,
       gameState: stepResult.finalGameState,

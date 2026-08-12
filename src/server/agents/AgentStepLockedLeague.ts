@@ -33,6 +33,25 @@ export interface AgentStepLockedLeagueConfig {
   autopilotExtraSteps: number;
 }
 
+/**
+ * Wall-clock split of one decision step. `decisionMs` is the whole
+ * `runDecisionTurn` call and `brainWaitMs` the slowest seat's brain latency
+ * inside it (seats decide in parallel), so `decisionMs - brainWaitMs` is the
+ * engine's own observation/legal-action/validation cost. `simMs` is the
+ * authoritative advance — the GameServer only relays intents, so this is turn
+ * emission, not simulation — and `mirrorMs` is the local mirror actually
+ * executing those turns, i.e. where the simulation runs.
+ */
+export interface AgentStepLockedStepTiming {
+  /** 1-based decision step. */
+  step: number;
+  turnNumber: number;
+  decisionMs: number;
+  brainWaitMs: number;
+  simMs: number;
+  mirrorMs: number;
+}
+
 export interface RunAgentStepLockedLeagueOptions {
   league: AgentLeagueMatchRunner;
   game: GameServer;
@@ -45,6 +64,8 @@ export interface RunAgentStepLockedLeagueOptions {
     gameState: Game;
     records: AgentDecisionRecord[];
   }) => void;
+  /** Per-step wall-clock split (opt-in): what the episode's time went to. */
+  onStepTiming?: (timing: AgentStepLockedStepTiming) => void;
   /**
    * Swap participants onto labeled deterministic autopilot brains. Required for
    * `autopilotExtraSteps` to take effect; the league itself only extends the
@@ -133,16 +154,21 @@ export async function runAgentStepLockedLeague(
       );
       options.onAutopilotEngage?.({ step });
     }
+    const decisionStartedAt = performance.now();
     const records = await options.league.runDecisionTurn({
       turnNumber: options.mirror.turnCount(),
       gameState: currentGame,
       maxDecisionMs: config.maxDecisionMs,
     });
+    const decisionMs = performance.now() - decisionStartedAt;
     postSpawnRecords.push(...records);
     const auditBaselines = captureDecisionAuditBaselines(records, currentGame);
 
     const turnsThisStep = turnsForDecisionStep(config, step);
+    const simStartedAt = performance.now();
     options.game.advanceTurnsForTesting(turnsThisStep);
+    const simMs = performance.now() - simStartedAt;
+    const mirrorStartedAt = performance.now();
     if (config.waitForMirrorCatchup) {
       currentGame = await waitForMirrorState({
         mirror: options.mirror,
@@ -154,6 +180,7 @@ export async function runAgentStepLockedLeague(
       await options.mirror.ingest(options.messages());
       currentGame = requireMirrorGame(options.mirror);
     }
+    const mirrorMs = performance.now() - mirrorStartedAt;
     auditDecisionEffects({
       records,
       beforeGame: null,
@@ -169,6 +196,20 @@ export async function runAgentStepLockedLeague(
       records,
     });
     stepsCompleted = step + 1;
+
+    options.onStepTiming?.({
+      step: step + 1,
+      turnNumber: options.mirror.turnCount(),
+      decisionMs,
+      // Seats decide concurrently (Promise.all), so the step waited on the
+      // slowest brain, not on the sum.
+      brainWaitMs: records.reduce(
+        (slowest, record) => Math.max(slowest, record.decisionLatencyMs),
+        0,
+      ),
+      simMs,
+      mirrorMs,
+    });
 
     options.log?.info("step-locked decision step complete", {
       step: step + 1,
