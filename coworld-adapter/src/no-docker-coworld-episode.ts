@@ -26,6 +26,7 @@ import {
 } from "./coworld-run-artifact-bundle.ts";
 import { competitiveSeatSpecs } from "./coworld-seat-specs.ts";
 import { coworldEpisodeIdentity } from "./coworld-seed.ts";
+import { CoworldSnapshotRetention } from "./coworld-snapshot-retention.ts";
 import { coworldPublicRunArtifacts } from "./proxywar-public-run-artifacts.ts";
 
 const localRoot = path.resolve(
@@ -65,6 +66,10 @@ const proxyWarStaticRoot = path.join(proxyWarRepo, "static");
 //      evenly-spaced snapshots (a watchability trade the operator can raise via
 //      the env override); the rendered replay (message-derived game-record) is
 //      unaffected. Env-overridable.
+//      CPU/GC companion (CoworldSnapshotRetention): snapshots that this cap
+//      would discard are not even BUILT — each build materializes every
+//      living player's tile set, O(all owned land tiles) per step — unless a
+//      /global spectator is connected and needs the live frame.
 const COWORLD_MAX_RETAINED_SNAPSHOTS = Math.max(
   16,
   Number(process.env.PROXYWAR_MAX_RETAINED_SNAPSHOTS ?? "48"),
@@ -79,6 +84,17 @@ type LegalActionView = {
   label: string;
   risk?: { level?: string; score?: number };
   metadata?: Record<string, unknown>;
+};
+
+type PendingFinalSnapshot = {
+  input: {
+    label: string;
+    turnNumber: number;
+    gameState: any;
+    records: unknown[];
+  };
+  /** The built frame when a /global viewer forced a build; null when skipped. */
+  built: unknown;
 };
 
 type PendingDecision = {
@@ -250,6 +266,16 @@ class CoworldProtocolServer {
       decide: async (input: unknown) =>
         this.decide(slot, buildRequestPayload(input)),
     };
+  }
+
+  /**
+   * True while at least one /global spectator socket is connected. Replay
+   * sockets don't count: they receive only the saved replay payload, never
+   * live recordSnapshot broadcasts. Lets the episode runner skip building
+   * spectator snapshots nobody will receive or retain.
+   */
+  hasSpectators(): boolean {
+    return this.globalSockets.size > 0;
   }
 
   recordSnapshot(
@@ -902,7 +928,31 @@ async function runProxyWarEpisode(
     retainTurnMessagesPrimaryOnly: true,
   });
   const roster = agentRunRoster(participants);
-  const spectatorSnapshots: unknown[] = [];
+  // CPU-side companion to the retention cap (lever 2 above): the sampler
+  // decides BEFORE building whether a step's snapshot will be retained, so
+  // steps that retention would discard skip the O(all-owned-tiles)
+  // buildAgentSpectatorSnapshot entirely — unless a /global spectator is
+  // watching live, in which case every step still builds and broadcasts.
+  const snapshotRetention = new CoworldSnapshotRetention<unknown>(
+    COWORLD_MAX_RETAINED_SNAPSHOTS,
+  );
+  const spectatorSnapshots = snapshotRetention.snapshots;
+  // The newest snapshot used to be retained at every moment (decimation kept
+  // even indices, and the just-pushed entry landed on one); the spectator
+  // artifact's LAST frame drives its "Final standing" panel. Stride skipping
+  // can pass over the episode's last step, so remember the newest unretained
+  // step's raw inputs (cheap references — the game state and records are
+  // alive anyway) and build the true final frame after the step loop, when
+  // the game state no longer advances.
+  // `null as ...` keeps the declared union: assignments happen inside the
+  // onSnapshot closure, which TS's assignment narrowing cannot see.
+  let pendingFinalSnapshot = null as PendingFinalSnapshot | null;
+  const spectatorMapInfo = (gameState: any) => ({
+    width: gameState.width(),
+    height: gameState.height(),
+    gameMap: String(gameState.config().gameConfig().gameMap),
+    gameMapSize: String(gameState.config().gameConfig().gameMapSize),
+  });
   let memTelemetrySnapshots = 0;
   // stderr, NOT the winston logger: the episode logger is level "warn", and pod
   // log retrieval is the whole point — this is the hosted OOM/crash forensics line.
@@ -975,36 +1025,37 @@ async function runProxyWarEpisode(
         gameState: any;
         records: unknown[];
       }) => {
-        const spectatorSnapshot = modules.buildAgentSpectatorSnapshot({
-          ...snapshot,
-          roster,
-        });
-        spectatorSnapshots.push(spectatorSnapshot);
-        if (spectatorSnapshots.length > COWORLD_MAX_RETAINED_SNAPSHOTS) {
-          // Even-stride decimation: keep every other snapshot (indices
-          // 0,2,4,...), halving the array in place while preserving the first
-          // snapshot and an even temporal spread. Retained snapshot heap stays
-          // O(1) in episode length. A full-length episode DOES hit this cap
-          // (that is the point — it flattens snapshot heap through the mid-game
-          // crash window); the resulting spectator replay carries up to
-          // COWORLD_MAX_RETAINED_SNAPSHOTS evenly-spaced snapshots instead of
-          // one per decision step. The rendered replay (message-derived
-          // game-record) and the result scores are unaffected.
-          let write = 0;
-          for (let read = 0; read < spectatorSnapshots.length; read += 2) {
-            spectatorSnapshots[write] = spectatorSnapshots[read];
-            write += 1;
+        // Sampler-driven decimation (see CoworldSnapshotRetention): retained
+        // snapshot heap stays O(1) in episode length. A full-length episode
+        // DOES hit the cap (that is the point — it flattens snapshot heap
+        // through the mid-game crash window); the spectator replay carries up
+        // to COWORLD_MAX_RETAINED_SNAPSHOTS evenly-spaced snapshots (plus the
+        // final frame) instead of one per decision step. The rendered replay
+        // (message-derived game-record) and the result scores are unaffected.
+        // Unretained steps skip the O(all-owned-tiles) snapshot build too
+        // unless a /global spectator is watching live.
+        const retained = snapshotRetention.beginStep();
+        if (retained || protocolServer.hasSpectators()) {
+          const spectatorSnapshot = modules.buildAgentSpectatorSnapshot({
+            ...snapshot,
+            roster,
+          });
+          if (retained) {
+            pendingFinalSnapshot = null;
+            snapshotRetention.retain(spectatorSnapshot);
+          } else {
+            pendingFinalSnapshot = {
+              input: snapshot,
+              built: spectatorSnapshot,
+            };
           }
-          spectatorSnapshots.length = write;
+          protocolServer.recordSnapshot(
+            spectatorSnapshot,
+            spectatorMapInfo(snapshot.gameState),
+          );
+        } else {
+          pendingFinalSnapshot = { input: snapshot, built: null };
         }
-        protocolServer.recordSnapshot(spectatorSnapshot, {
-          width: snapshot.gameState.width(),
-          height: snapshot.gameState.height(),
-          gameMap: String(snapshot.gameState.config().gameConfig().gameMap),
-          gameMapSize: String(
-            snapshot.gameState.config().gameConfig().gameMapSize,
-          ),
-        });
         memTelemetrySnapshots += 1;
         // Hosted default stays every-10 (lean log tail); local repro can set
         // PROXYWAR_MEM_TELEMETRY_EVERY=1 for per-decision-step heap resolution.
@@ -1017,6 +1068,27 @@ async function runProxyWarEpisode(
       },
       log,
     });
+    if (pendingFinalSnapshot !== null) {
+      // The last step's snapshot wasn't retained (and possibly not built).
+      // The game state stopped advancing when the step loop returned, so
+      // building from the saved inputs now is identical to having built it
+      // inside the final onSnapshot call. Re-record only when it was never
+      // built — a spectator-only build already went out live.
+      const finalSnapshot =
+        pendingFinalSnapshot.built ??
+        modules.buildAgentSpectatorSnapshot({
+          ...pendingFinalSnapshot.input,
+          roster,
+        });
+      snapshotRetention.appendFinal(finalSnapshot);
+      if (pendingFinalSnapshot.built === null) {
+        protocolServer.recordSnapshot(
+          finalSnapshot,
+          spectatorMapInfo(pendingFinalSnapshot.input.gameState),
+        );
+      }
+      pendingFinalSnapshot = null;
+    }
     const completedAt = Date.now();
     clearInterval(memTelemetryTimer);
     logMemTelemetry("episode-complete", mirror.turnCount());
