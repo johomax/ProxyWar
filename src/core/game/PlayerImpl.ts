@@ -1075,10 +1075,7 @@ export class PlayerImpl implements Player {
     return closest?.unit ?? false;
   }
 
-  private canBuildUnitType(
-    unitType: UnitType,
-    knownCost: Gold | null = null,
-  ): boolean {
+  canBuildUnitType(unitType: UnitType, knownCost: Gold | null = null): boolean {
     if (this.mg.config().isUnitDisabled(unitType)) {
       return false;
     }
@@ -1332,27 +1329,72 @@ export class PlayerImpl implements Player {
     tile: TileRef,
     validTiles: TileRef[] | null = null,
   ): TileRef | false {
-    const tiles = validTiles ?? this.validStructureSpawnTiles(tile, false);
-    return tiles[0] ?? false;
+    // validTiles is nearest-first, so index 0 is the spawn tile.
+    return validTiles !== null
+      ? (validTiles[0] ?? false)
+      : this.closestStructureSpawnTile(tile);
   }
 
-  private validStructureSpawnTiles(
+  /**
+   * Owned, unblocked tiles within the structure search radius.
+   * Index 0 is the nearest tile; the rest are in discovery order, NOT sorted.
+   */
+  private validStructureSpawnTiles(tile: TileRef): TileRef[] {
+    const valid: TileRef[] = [];
+    let bestIndex = -1;
+    let bestDistSquared = Infinity;
+    this.forEachStructureSpawnTile(tile, (t) => {
+      const distSquared = this.mg.euclideanDistSquared(t, tile);
+      if (distSquared < bestDistSquared) {
+        bestDistSquared = distSquared;
+        bestIndex = valid.length;
+      }
+      valid.push(t);
+    });
+    if (bestIndex > 0) {
+      [valid[0], valid[bestIndex]] = [valid[bestIndex], valid[0]];
+    }
+    return valid;
+  }
+
+  /** Nearest valid spawn tile, without materializing the candidate list. */
+  private closestStructureSpawnTile(tile: TileRef): TileRef | false {
+    let best: TileRef | false = false;
+    let bestDistSquared = Infinity;
+    this.forEachStructureSpawnTile(tile, (t) => {
+      const distSquared = this.mg.euclideanDistSquared(t, tile);
+      if (distSquared < bestDistSquared) {
+        bestDistSquared = distSquared;
+        best = t;
+      }
+    });
+    return best;
+  }
+
+  /** Visits each owned tile in range that no structure blocks, in discovery order. */
+  private forEachStructureSpawnTile(
     tile: TileRef,
-    includeAllValidTiles: boolean = true,
-  ): TileRef[] {
+    visit: (t: TileRef) => void,
+  ): void {
     if (this.mg.owner(tile) !== this) {
-      return [];
+      return;
     }
     const searchRadius = 15;
     const searchRadiusSquared = searchRadius ** 2;
+    const minDist = this.mg.config().structureMinDist();
+    const minDistSquared = minDist ** 2;
 
-    const nearbyUnits = this.mg.nearbyUnits(
-      tile,
-      searchRadius * 2,
-      Structures.types,
-      undefined,
-      true,
-    );
+    // A structure can only block a candidate within minDist of it, and every
+    // candidate is within searchRadius of `tile`.
+    const blockerTiles = this.mg
+      .nearbyUnits(
+        tile,
+        searchRadius + minDist,
+        Structures.types,
+        undefined,
+        true,
+      )
+      .map(({ unit }) => unit.tile());
     const nearbyTiles = this.mg.bfs(tile, (gm, t) => {
       return (
         this.mg.euclideanDistSquared(tile, t) < searchRadiusSquared &&
@@ -1360,45 +1402,18 @@ export class PlayerImpl implements Player {
       );
     });
 
-    const minDistSquared = this.mg.config().structureMinDist() ** 2;
-    const valid: TileRef[] = [];
-    let bestTile: TileRef | false = false;
-    let bestDistSquared = Infinity;
-    let bestIndex = -1;
     for (const t of nearbyTiles) {
       let blocked = false;
-      for (const { unit } of nearbyUnits) {
-        if (this.mg.euclideanDistSquared(unit.tile(), t) < minDistSquared) {
+      for (const blockerTile of blockerTiles) {
+        if (this.mg.euclideanDistSquared(blockerTile, t) < minDistSquared) {
           blocked = true;
           break;
         }
       }
-      if (blocked) {
-        continue;
-      }
-
-      const distSquared = this.mg.euclideanDistSquared(t, tile);
-      const candidateIndex = valid.length;
-      if (includeAllValidTiles) {
-        valid.push(t);
-      }
-      if (distSquared < bestDistSquared) {
-        bestTile = t;
-        bestDistSquared = distSquared;
-        bestIndex = candidateIndex;
+      if (!blocked) {
+        visit(t);
       }
     }
-
-    if (bestTile === false) {
-      return [];
-    }
-    if (!includeAllValidTiles) {
-      return [bestTile];
-    }
-    if (bestIndex > 0) {
-      [valid[0], valid[bestIndex]] = [valid[bestIndex], valid[0]];
-    }
-    return valid;
   }
 
   tradeShipSpawn(targetTile: TileRef): TileRef | false {

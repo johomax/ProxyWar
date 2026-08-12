@@ -668,7 +668,7 @@ export class AgentObservationBuilder {
         .config()
         .unitInfo(option.unit)
         .cost(gameState, player);
-      if (player.gold() < cost) {
+      if (!player.canBuildUnitType(option.unit)) {
         continue;
       }
       const target = this.findBuildTarget(gameState, player, option.unit);

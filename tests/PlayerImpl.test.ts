@@ -3,7 +3,6 @@ import {
   Player,
   PlayerInfo,
   PlayerType,
-  Structures,
   UnitType,
 } from "../src/core/game/Game";
 import { TileRef } from "../src/core/game/GameMap";
@@ -14,47 +13,39 @@ let game: Game;
 let player: Player;
 let other: Player;
 
-function legacyLandStructureSpawn(
+// Brute-force spec of valid spawn tiles: owned tiles connected to `tile`
+// within the search radius, at least structureMinDist from every structure.
+// Deliberately independent of the production bfs/nearbyUnits helpers.
+function bruteForceSpawnTiles(
   game: Game,
   player: Player,
   tile: TileRef,
-): TileRef | false {
+  structureTiles: TileRef[],
+): TileRef[] {
   if (game.owner(tile) !== player) {
-    return false;
+    return [];
   }
-  const searchRadius = 15;
-  const searchRadiusSquared = searchRadius ** 2;
-  const nearbyUnits = game.nearbyUnits(
-    tile,
-    searchRadius * 2,
-    Structures.types,
-    undefined,
-    true,
-  );
-  const nearbyTiles = game.bfs(tile, (map, candidate) => {
-    return (
-      game.euclideanDistSquared(tile, candidate) < searchRadiusSquared &&
-      map.ownerID(candidate) === player.smallID()
-    );
-  });
-  const validSet = new Set(nearbyTiles);
+  const searchRadiusSquared = 15 ** 2;
   const minDistSquared = game.config().structureMinDist() ** 2;
-
-  for (const candidate of nearbyTiles) {
-    for (const { unit } of nearbyUnits) {
-      if (game.euclideanDistSquared(unit.tile(), candidate) < minDistSquared) {
-        validSet.delete(candidate);
-        break;
+  const reachable = new Set<TileRef>([tile]);
+  const queue = [tile];
+  for (let i = 0; i < queue.length; i++) {
+    for (const n of game.neighbors(queue[i])) {
+      if (
+        !reachable.has(n) &&
+        game.owner(n) === player &&
+        game.euclideanDistSquared(tile, n) < searchRadiusSquared
+      ) {
+        reachable.add(n);
+        queue.push(n);
       }
     }
   }
-
-  const valid = Array.from(validSet);
-  valid.sort(
-    (a, b) =>
-      game.euclideanDistSquared(a, tile) - game.euclideanDistSquared(b, tile),
+  return [...reachable].filter((t) =>
+    structureTiles.every(
+      (s) => game.euclideanDistSquared(s, t) >= minDistSquared,
+    ),
   );
-  return valid[0] ?? false;
 }
 
 describe("PlayerImpl", () => {
@@ -137,7 +128,7 @@ describe("PlayerImpl", () => {
     [29, 7],
     [101, 10],
   ])(
-    "matches the legacy structure spawn selection for seed %i",
+    "picks the closest valid structure spawn tile for seed %i",
     (seed, minStructureDistance) => {
       const random = new PseudoRandom(seed);
       game.config().structureMinDist = () => minStructureDistance;
@@ -176,24 +167,44 @@ describe("PlayerImpl", () => {
 
       const unownedTarget = game.ref(8, 8);
       other.conquer(unownedTarget);
+      const structureTiles = [tieTarget, ...randomTargets];
       const targets = [tieTarget, ...randomTargets, unownedTarget];
 
       for (const target of targets) {
-        const legacy = legacyLandStructureSpawn(game, player, target);
-        expect(player.canBuild(UnitType.DefensePost, target)).toBe(legacy);
+        const spawn = player.canBuild(UnitType.DefensePost, target);
         expect(
           player.buildableUnits(target, [UnitType.DefensePost])[0].canBuild,
-        ).toBe(legacy);
+        ).toBe(spawn);
+
+        const valid = bruteForceSpawnTiles(
+          game,
+          player,
+          target,
+          structureTiles,
+        );
+        if (valid.length === 0) {
+          expect(spawn).toBe(false);
+          continue;
+        }
+        expect(valid).toContain(spawn);
+        let bestDistSquared = Infinity;
+        for (const t of valid) {
+          bestDistSquared = Math.min(
+            bestDistSquared,
+            game.euclideanDistSquared(t, target),
+          );
+        }
+        expect(game.euclideanDistSquared(spawn as TileRef, target)).toBe(
+          bestDistSquared,
+        );
       }
 
-      const legacyTie = legacyLandStructureSpawn(game, player, tieTarget);
-      expect(legacyTie).not.toBe(false);
-      expect([
-        game.ref(25, 25 - minStructureDistance),
-        game.ref(25, 25 + minStructureDistance),
-        game.ref(25 - minStructureDistance, 25),
+      // Exact tie-break, not just "some nearest tile": many tiles sit at exactly
+      // minStructureDistance (for 10, both 10² and 6²+8² qualify). Pinning the
+      // winning TileRef locks the discovery order that replays depend on.
+      expect(player.canBuild(UnitType.DefensePost, tieTarget)).toBe(
         game.ref(25 + minStructureDistance, 25),
-      ]).toContain(legacyTie);
+      );
       expect(
         player.canBuild(UnitType.DefensePost, unownedTarget, [tieTarget]),
       ).toBe(tieTarget);
