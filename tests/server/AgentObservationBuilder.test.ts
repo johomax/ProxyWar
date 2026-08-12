@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AttackExecution } from "../../src/core/execution/AttackExecution";
 import { SpawnExecution } from "../../src/core/execution/SpawnExecution";
 import { AllianceRequestExecution } from "../../src/core/execution/alliance/AllianceRequestExecution";
@@ -29,6 +29,25 @@ async function threePlayerGame() {
   game.player("P_AGENT").conquer(game.ref(0, 0));
   game.player("P_A").conquer(game.ref(0, 1));
   game.player("P_B").conquer(game.ref(0, 2));
+  while (game.inSpawnPhase()) {
+    game.executeNextTick();
+  }
+  return game;
+}
+
+async function finiteGoldGame() {
+  const agent = new PlayerInfo(
+    "Agent",
+    PlayerType.Human,
+    "CLNT_AGENT",
+    "P_AGENT",
+  );
+  const game = await setup(
+    "plains",
+    { nations: "disabled", instantBuild: true },
+    [agent],
+  );
+  game.player(agent.id).conquer(game.ref(0, 0));
   while (game.inSpawnPhase()) {
     game.executeNextTick();
   }
@@ -112,6 +131,48 @@ function ally(
   game.addExecution(new AllianceRequestExecution(pb, pa.id()));
   game.executeNextTick();
 }
+
+describe("AgentObservationBuilder build affordability", () => {
+  const buildOptionUnits = new Set([
+    UnitType.DefensePost,
+    UnitType.City,
+    UnitType.Port,
+    UnitType.Factory,
+    UnitType.SAMLauncher,
+    UnitType.MissileSilo,
+    UnitType.AtomBomb,
+    UnitType.HydrogenBomb,
+    UnitType.MIRV,
+  ]);
+
+  it("does not search build tiles for unaffordable units", async () => {
+    const game = await finiteGoldGame();
+    const player = game.player("P_AGENT");
+    player.removeGold(player.gold());
+    const canBuild = vi.spyOn(player, "canBuild");
+
+    const observation = observe(game);
+
+    expect(observation.nonCombat.buildOptions).toEqual([]);
+    expect(
+      canBuild.mock.calls.filter(([unit]) => buildOptionUnits.has(unit)),
+    ).toEqual([]);
+  });
+
+  it("searches build tiles when gold exactly equals the unit cost", async () => {
+    const game = await finiteGoldGame();
+    const player = game.player("P_AGENT");
+    player.removeGold(player.gold());
+    player.addGold(game.config().unitInfo(UnitType.City).cost(game, player));
+    const canBuild = vi.spyOn(player, "canBuild");
+
+    observe(game);
+
+    expect(canBuild.mock.calls.some(([unit]) => unit === UnitType.City)).toBe(
+      true,
+    );
+  });
+});
 
 describe("AgentObservationBuilder rival-rival coalition graph", () => {
   it("surfaces which rivals are allied with EACH OTHER (not just with the agent)", async () => {

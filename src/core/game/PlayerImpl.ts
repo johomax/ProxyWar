@@ -1332,14 +1332,14 @@ export class PlayerImpl implements Player {
     tile: TileRef,
     validTiles: TileRef[] | null = null,
   ): TileRef | false {
-    const tiles = validTiles ?? this.validStructureSpawnTiles(tile);
-    if (tiles.length === 0) {
-      return false;
-    }
-    return tiles[0];
+    const tiles = validTiles ?? this.validStructureSpawnTiles(tile, false);
+    return tiles[0] ?? false;
   }
 
-  private validStructureSpawnTiles(tile: TileRef): TileRef[] {
+  private validStructureSpawnTiles(
+    tile: TileRef,
+    includeAllValidTiles: boolean = true,
+  ): TileRef[] {
     if (this.mg.owner(tile) !== this) {
       return [];
     }
@@ -1359,23 +1359,45 @@ export class PlayerImpl implements Player {
         gm.ownerID(t) === this.smallID()
       );
     });
-    const validSet: Set<TileRef> = new Set(nearbyTiles);
 
     const minDistSquared = this.mg.config().structureMinDist() ** 2;
+    const valid: TileRef[] = [];
+    let bestTile: TileRef | false = false;
+    let bestDistSquared = Infinity;
+    let bestIndex = -1;
     for (const t of nearbyTiles) {
+      let blocked = false;
       for (const { unit } of nearbyUnits) {
         if (this.mg.euclideanDistSquared(unit.tile(), t) < minDistSquared) {
-          validSet.delete(t);
+          blocked = true;
           break;
         }
       }
+      if (blocked) {
+        continue;
+      }
+
+      const distSquared = this.mg.euclideanDistSquared(t, tile);
+      const candidateIndex = valid.length;
+      if (includeAllValidTiles) {
+        valid.push(t);
+      }
+      if (distSquared < bestDistSquared) {
+        bestTile = t;
+        bestDistSquared = distSquared;
+        bestIndex = candidateIndex;
+      }
     }
-    const valid = Array.from(validSet);
-    valid.sort(
-      (a, b) =>
-        this.mg.euclideanDistSquared(a, tile) -
-        this.mg.euclideanDistSquared(b, tile),
-    );
+
+    if (bestTile === false) {
+      return [];
+    }
+    if (!includeAllValidTiles) {
+      return [bestTile];
+    }
+    if (bestIndex > 0) {
+      [valid[0], valid[bestIndex]] = [valid[bestIndex], valid[0]];
+    }
     return valid;
   }
 

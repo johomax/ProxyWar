@@ -3,13 +3,59 @@ import {
   Player,
   PlayerInfo,
   PlayerType,
+  Structures,
   UnitType,
 } from "../src/core/game/Game";
+import { TileRef } from "../src/core/game/GameMap";
+import { PseudoRandom } from "../src/core/PseudoRandom";
 import { setup } from "./util/Setup";
 
 let game: Game;
 let player: Player;
 let other: Player;
+
+function legacyLandStructureSpawn(
+  game: Game,
+  player: Player,
+  tile: TileRef,
+): TileRef | false {
+  if (game.owner(tile) !== player) {
+    return false;
+  }
+  const searchRadius = 15;
+  const searchRadiusSquared = searchRadius ** 2;
+  const nearbyUnits = game.nearbyUnits(
+    tile,
+    searchRadius * 2,
+    Structures.types,
+    undefined,
+    true,
+  );
+  const nearbyTiles = game.bfs(tile, (map, candidate) => {
+    return (
+      game.euclideanDistSquared(tile, candidate) < searchRadiusSquared &&
+      map.ownerID(candidate) === player.smallID()
+    );
+  });
+  const validSet = new Set(nearbyTiles);
+  const minDistSquared = game.config().structureMinDist() ** 2;
+
+  for (const candidate of nearbyTiles) {
+    for (const { unit } of nearbyUnits) {
+      if (game.euclideanDistSquared(unit.tile(), candidate) < minDistSquared) {
+        validSet.delete(candidate);
+        break;
+      }
+    }
+  }
+
+  const valid = Array.from(validSet);
+  valid.sort(
+    (a, b) =>
+      game.euclideanDistSquared(a, tile) - game.euclideanDistSquared(b, tile),
+  );
+  return valid[0] ?? false;
+}
 
 describe("PlayerImpl", () => {
   beforeEach(async () => {
@@ -85,6 +131,74 @@ describe("PlayerImpl", () => {
     );
     expect(cityToUpgrade).toBe(false);
   });
+
+  test.each([
+    [11, 4],
+    [29, 7],
+    [101, 10],
+  ])(
+    "matches the legacy structure spawn selection for seed %i",
+    (seed, minStructureDistance) => {
+      const random = new PseudoRandom(seed);
+      game.config().structureMinDist = () => minStructureDistance;
+
+      for (let x = 15; x <= 85; x++) {
+        for (let y = 15; y <= 85; y++) {
+          player.conquer(game.ref(x, y));
+        }
+      }
+
+      const tieTarget = game.ref(25, 25);
+      const randomTargets = new Set<TileRef>();
+      while (randomTargets.size < 10) {
+        randomTargets.add(
+          game.ref(random.nextInt(58, 76), random.nextInt(58, 76)),
+        );
+      }
+
+      const ownershipHoles = new Set<TileRef>();
+      while (ownershipHoles.size < 45) {
+        const hole = game.ref(random.nextInt(52, 82), random.nextInt(52, 82));
+        if (!randomTargets.has(hole)) {
+          ownershipHoles.add(hole);
+        }
+      }
+      for (const hole of ownershipHoles) {
+        other.conquer(hole);
+      }
+
+      player.addGold(1_000_000_000_000n);
+      const tieBlocker = player.buildUnit(UnitType.City, tieTarget, {});
+      tieBlocker.setUnderConstruction(true);
+      for (const target of randomTargets) {
+        player.buildUnit(UnitType.City, target, {});
+      }
+
+      const unownedTarget = game.ref(8, 8);
+      other.conquer(unownedTarget);
+      const targets = [tieTarget, ...randomTargets, unownedTarget];
+
+      for (const target of targets) {
+        const legacy = legacyLandStructureSpawn(game, player, target);
+        expect(player.canBuild(UnitType.DefensePost, target)).toBe(legacy);
+        expect(
+          player.buildableUnits(target, [UnitType.DefensePost])[0].canBuild,
+        ).toBe(legacy);
+      }
+
+      const legacyTie = legacyLandStructureSpawn(game, player, tieTarget);
+      expect(legacyTie).not.toBe(false);
+      expect([
+        game.ref(25, 25 - minStructureDistance),
+        game.ref(25, 25 + minStructureDistance),
+        game.ref(25 - minStructureDistance, 25),
+        game.ref(25 + minStructureDistance, 25),
+      ]).toContain(legacyTie);
+      expect(
+        player.canBuild(UnitType.DefensePost, unownedTarget, [tieTarget]),
+      ).toBe(tieTarget);
+    },
+  );
 
   test("Can't send alliance requests when dead", () => {
     // conquer other

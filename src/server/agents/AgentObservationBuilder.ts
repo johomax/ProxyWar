@@ -664,6 +664,13 @@ export class AgentObservationBuilder {
     const options: AgentBuildOption[] = [];
 
     for (const option of candidates) {
+      const cost = gameState
+        .config()
+        .unitInfo(option.unit)
+        .cost(gameState, player);
+      if (player.gold() < cost) {
+        continue;
+      }
       const target = this.findBuildTarget(gameState, player, option.unit);
       if (target === null) {
         continue;
@@ -673,11 +680,7 @@ export class AgentObservationBuilder {
         role: option.role,
         targetTile: target.targetTile,
         buildTile: target.buildTile,
-        cost: gameState
-          .config()
-          .unitInfo(option.unit)
-          .cost(gameState, player)
-          .toString(),
+        cost: cost.toString(),
         legalReason: `core canBuild(${option.unit}) returned build tile ${target.buildTile}`,
         ...target.placement,
       });
