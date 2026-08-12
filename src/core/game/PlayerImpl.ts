@@ -1075,10 +1075,7 @@ export class PlayerImpl implements Player {
     return closest?.unit ?? false;
   }
 
-  private canBuildUnitType(
-    unitType: UnitType,
-    knownCost: Gold | null = null,
-  ): boolean {
+  canBuildUnitType(unitType: UnitType, knownCost: Gold | null = null): boolean {
     if (this.mg.config().isUnitDisabled(unitType)) {
       return false;
     }
@@ -1332,27 +1329,32 @@ export class PlayerImpl implements Player {
     tile: TileRef,
     validTiles: TileRef[] | null = null,
   ): TileRef | false {
-    const tiles = validTiles ?? this.validStructureSpawnTiles(tile, false);
-    return tiles[0] ?? false;
+    const tiles = validTiles ?? this.validStructureSpawnTiles(tile);
+    return (
+      findClosestBy(tiles, (t) => this.mg.euclideanDistSquared(t, tile)) ??
+      false
+    );
   }
 
-  private validStructureSpawnTiles(
-    tile: TileRef,
-    includeAllValidTiles: boolean = true,
-  ): TileRef[] {
+  /** Owned, unblocked tiles within the structure search radius, in no particular order. */
+  private validStructureSpawnTiles(tile: TileRef): TileRef[] {
     if (this.mg.owner(tile) !== this) {
       return [];
     }
     const searchRadius = 15;
     const searchRadiusSquared = searchRadius ** 2;
+    const minDist = this.mg.config().structureMinDist();
+    const minDistSquared = minDist ** 2;
 
-    const nearbyUnits = this.mg.nearbyUnits(
-      tile,
-      searchRadius * 2,
-      Structures.types,
-      undefined,
-      true,
-    );
+    const blockerTiles = this.mg
+      .nearbyUnits(
+        tile,
+        searchRadius + minDist,
+        Structures.types,
+        undefined,
+        true,
+      )
+      .map(({ unit }) => unit.tile());
     const nearbyTiles = this.mg.bfs(tile, (gm, t) => {
       return (
         this.mg.euclideanDistSquared(tile, t) < searchRadiusSquared &&
@@ -1360,43 +1362,18 @@ export class PlayerImpl implements Player {
       );
     });
 
-    const minDistSquared = this.mg.config().structureMinDist() ** 2;
     const valid: TileRef[] = [];
-    let bestTile: TileRef | false = false;
-    let bestDistSquared = Infinity;
-    let bestIndex = -1;
     for (const t of nearbyTiles) {
       let blocked = false;
-      for (const { unit } of nearbyUnits) {
-        if (this.mg.euclideanDistSquared(unit.tile(), t) < minDistSquared) {
+      for (const blockerTile of blockerTiles) {
+        if (this.mg.euclideanDistSquared(blockerTile, t) < minDistSquared) {
           blocked = true;
           break;
         }
       }
-      if (blocked) {
-        continue;
-      }
-
-      const distSquared = this.mg.euclideanDistSquared(t, tile);
-      const candidateIndex = valid.length;
-      if (includeAllValidTiles) {
+      if (!blocked) {
         valid.push(t);
       }
-      if (distSquared < bestDistSquared) {
-        bestTile = t;
-        bestDistSquared = distSquared;
-        bestIndex = candidateIndex;
-      }
-    }
-
-    if (bestTile === false) {
-      return [];
-    }
-    if (!includeAllValidTiles) {
-      return [bestTile];
-    }
-    if (bestIndex > 0) {
-      [valid[0], valid[bestIndex]] = [valid[bestIndex], valid[0]];
     }
     return valid;
   }

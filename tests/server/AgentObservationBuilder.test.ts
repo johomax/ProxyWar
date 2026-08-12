@@ -133,18 +133,6 @@ function ally(
 }
 
 describe("AgentObservationBuilder build affordability", () => {
-  const buildOptionUnits = new Set([
-    UnitType.DefensePost,
-    UnitType.City,
-    UnitType.Port,
-    UnitType.Factory,
-    UnitType.SAMLauncher,
-    UnitType.MissileSilo,
-    UnitType.AtomBomb,
-    UnitType.HydrogenBomb,
-    UnitType.MIRV,
-  ]);
-
   it("does not search build tiles for unaffordable units", async () => {
     const game = await finiteGoldGame();
     const player = game.player("P_AGENT");
@@ -154,8 +142,9 @@ describe("AgentObservationBuilder build affordability", () => {
     const observation = observe(game);
 
     expect(observation.nonCombat.buildOptions).toEqual([]);
+    // observe() also probes TransportShip legality outside buildOptions.
     expect(
-      canBuild.mock.calls.filter(([unit]) => buildOptionUnits.has(unit)),
+      canBuild.mock.calls.filter(([unit]) => unit !== UnitType.TransportShip),
     ).toEqual([]);
   });
 
