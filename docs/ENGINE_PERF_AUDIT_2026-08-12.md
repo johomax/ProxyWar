@@ -256,6 +256,46 @@ maintained border-neighbor index would turn most O(B)/O(T) scans above into
 O(changed) updates. This is the long-pole change; everything in P0 is
 achievable without it.
 
+## Provenance: ProxyWar-specific vs inherited vs already fixed upstream
+
+Compared against `openfrontio/openfrontio` HEAD (shallow clone, 2026-08-12).
+Three buckets:
+
+**ProxyWar-only (no upstream counterpart)** — the entire P0 layer lives in
+fork code: `src/server/agents/*` (observation builder, legal actions, league
+match, mirror, in-process socket), the coworld driver, and the headless use
+of `GameRunner` with a no-op callback. Also fork-local:
+`PlayerImpl.tiles()` returning a defensive `new Set(...)` copy — current
+upstream returns the live set.
+
+**Fixed in current upstream, still slow in our pinned engine** — targeted
+backport candidates, they directly hit the profiled sim hot spots:
+- `TileSet` (`src/core/game/TileSet.ts` upstream): typed-array open-addressing
+  set replacing `Set<number>` for `_tiles`/`_borderTiles` (~12 vs ~30+
+  bytes/entry) — this is the "Structural" item below, already built.
+- `neighbors4(ref, out)` scratch-buffer API, used in the `AttackExecution`
+  conquest loop and an allocation-free `sharesBorderWith`.
+- `FlatBinaryHeap.dequeue()` returning a bare `TileRef` (no tuple per pop).
+- `PlayerImpl.toUpdate(...)` returning `null` when unchanged plus packed
+  stats quads — removes the per-player-per-tick update-object churn.
+- `calculateClusters` returning `TileRef[][]` instead of per-cluster `Set`s.
+
+**Present in current upstream too (both projects inherit)** —
+`refreshToConquer()`-then-`retreat()`, `attackLogic`'s DefensePost
+`nearbyUnits` per conquered tile, `validStructureSpawnTiles` BFS+sort with
+`landBasedStructureSpawn` reading `[0]`, `placeName` every 30 ticks in
+`GameRunner` (upstream needs it for rendering; only headless use makes it
+waste), `decayRelations` every tick, `new SpatialQuery(...)` per
+`canBuildTransportShip` call, `trackShipsAndRetaliate` every tick,
+the `SpawnExecution` retry loop, `UnitGrid.nearbyUnits` result-object
+allocation, and cluster recompute gated on any tile change rather than
+tile loss.
+
+Note the fork has its own engine perf work upstream lacks (`0c8aa2b`
+arithmetic tile coords, `cefa354` columnar spawn scan, the cluster-traversal
+gen-stamp buffer), so a wholesale engine sync is not free — but the five
+backports above are self-contained.
+
 ## Suggested measurement guardrail
 
 `coworld-adapter/scripts/memory-gate.mjs` already drives a real 80-step
