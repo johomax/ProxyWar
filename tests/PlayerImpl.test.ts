@@ -95,7 +95,7 @@ describe("PlayerImpl", () => {
     expect(other.canSendAllianceRequest(player)).toBe(false);
   });
 
-  test("tiles returns a live view", () => {
+  test("tiles returns a live runtime-read-only view", () => {
     const tiles = player.tiles();
     const tile = game.ref(50, 50);
 
@@ -103,5 +103,20 @@ describe("PlayerImpl", () => {
     expect(tiles.has(tile)).toBe(false);
     player.conquer(tile);
     expect(tiles.has(tile)).toBe(true);
+    expect(() => (tiles as Set<number>).clear()).toThrow(TypeError);
+    expect(game.owner(tile)).toBe(player);
+  });
+
+  test("tiles iteration stays bounded when the current tile is reconquered", () => {
+    const expected = Array.from(player.tiles());
+    const visited: number[] = [];
+
+    for (const tile of player.tiles()) {
+      visited.push(tile);
+      if (visited.length > expected.length) break;
+      player.conquer(tile);
+    }
+
+    expect(visited).toEqual(expected);
   });
 });
