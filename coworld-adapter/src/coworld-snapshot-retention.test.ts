@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { CoworldSnapshotRetention } from "./coworld-snapshot-retention.ts";
 
-// Drive the sampler like the episode runner does: one beginStep() per
-// snapshot step, building (here: recording the step index) only when told to.
+// Drive the sampler like the episode runner does: one step() per snapshot
+// step, the build closure recording the step index it built.
 function run(
   maxRetained: number,
   steps: number,
+  forceBuild = false,
 ): {
+  sampler: CoworldSnapshotRetention<number>;
   kept: number[];
   builds: number;
   maxLength: number;
@@ -15,13 +17,13 @@ function run(
   let builds = 0;
   let maxLength = 0;
   for (let step = 0; step < steps; step++) {
-    if (sampler.beginStep()) {
+    sampler.step(() => {
       builds += 1;
-      sampler.retain(step);
-    }
+      return step;
+    }, forceBuild);
     maxLength = Math.max(maxLength, sampler.snapshots.length);
   }
-  return { kept: sampler.snapshots, builds, maxLength };
+  return { sampler, kept: sampler.snapshots, builds, maxLength };
 }
 
 describe("CoworldSnapshotRetention", () => {
@@ -67,19 +69,16 @@ describe("CoworldSnapshotRetention", () => {
 
   it("never drops the newest retained entry, even with an odd cap", () => {
     // Regression: an odd cap used to let decimation discard the just-pushed
-    // snapshot. If that push was the episode's LAST step, the runner (which
-    // clears its pending-final slot on retained steps) lost the true final
-    // frame and the artifact's "Final standing" went a full stride stale.
+    // snapshot; if that push was the episode's LAST step, the true final
+    // frame was lost and the artifact's "Final standing" went a full stride
+    // stale. Odd caps now normalize up to even.
     const sampler = new CoworldSnapshotRetention<number>(17);
-    let lastRetained = -1;
     for (let step = 0; step < 1000; step++) {
-      if (sampler.beginStep()) {
-        sampler.retain(step);
-        lastRetained = step;
+      const frame = sampler.step(() => step, false);
+      if (frame !== null) {
         expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(step);
       }
     }
-    expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(lastRetained);
   });
 
   it.each([Number.NaN, Infinity, 0, -3])(
@@ -93,16 +92,67 @@ describe("CoworldSnapshotRetention", () => {
     },
   );
 
-  it("appendFinal may exceed the cap by one for the true final frame", () => {
-    const sampler = new CoworldSnapshotRetention<number>(16);
-    for (let step = 0; step < 100; step++) {
-      if (sampler.beginStep()) {
-        sampler.retain(step);
-      }
-    }
-    expect(sampler.snapshots).not.toContain(99);
-    sampler.appendFinal(99);
+  it("finalize appends and returns the unbuilt final frame for broadcast", () => {
+    const { sampler, kept } = run(16, 100);
+    expect(kept).not.toContain(99);
+    // Returning 99 proves the stored build closure ran at finalize time.
+    expect(sampler.finalize()).toBe(99);
     expect(sampler.snapshots.length).toBeLessThanOrEqual(17);
     expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(99);
+    // Idempotent: nothing left pending.
+    expect(sampler.finalize()).toBeNull();
+  });
+
+  it("finalize is a no-op when the last step was retained", () => {
+    // Step 96 is stride-aligned at cap 16 (stride 8 by then).
+    const { sampler, kept } = run(16, 97);
+    expect(kept[kept.length - 1]).toBe(96);
+    const lengthBefore = sampler.snapshots.length;
+    expect(sampler.finalize()).toBeNull();
+    expect(sampler.snapshots.length).toBe(lengthBefore);
+  });
+
+  it("finalize appends but does not re-broadcast a spectator-built frame", () => {
+    // forceBuild (a live viewer) builds and broadcasts every step, so the
+    // final frame was already sent: finalize must append it to the artifact
+    // without asking the caller to broadcast it again.
+    const { sampler, builds } = run(16, 100, true);
+    expect(builds).toBe(100);
+    expect(sampler.finalize()).toBeNull();
+    expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(99);
+  });
+
+  it("buildPendingFrame builds the newest skipped frame exactly once", () => {
+    const { sampler } = run(16, 100);
+    expect(sampler.buildPendingFrame()).toBe(99);
+    // Already built (and broadcast by the caller contract): nothing owed.
+    expect(sampler.buildPendingFrame()).toBeNull();
+    expect(sampler.finalize()).toBeNull();
+    expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(99);
+  });
+
+  it("buildPendingFrame is a no-op with no pending step", () => {
+    const sampler = new CoworldSnapshotRetention<number>(16);
+    expect(sampler.buildPendingFrame()).toBeNull();
+    sampler.step(() => 0, false); // retained, already broadcast
+    expect(sampler.buildPendingFrame()).toBeNull();
+  });
+
+  it("a build that throws leaves no stale pending final frame", () => {
+    const sampler = new CoworldSnapshotRetention<number>(16);
+    for (let step = 0; step < 17; step++) {
+      sampler.step(() => step, false);
+    }
+    // Step 17 is unretained (stride 2 after the first decimation); a forced
+    // build that throws must not leave an older frame (or the throwing
+    // builder) registered as the episode's final frame.
+    expect(() =>
+      sampler.step(() => {
+        throw new Error("boom");
+      }, true),
+    ).toThrow("boom");
+    const lengthBefore = sampler.snapshots.length;
+    expect(sampler.finalize()).toBeNull();
+    expect(sampler.snapshots.length).toBe(lengthBefore);
   });
 });

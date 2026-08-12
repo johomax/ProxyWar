@@ -94,18 +94,17 @@ type LegalActionView = {
   metadata?: Record<string, unknown>;
 };
 
-/** The onSnapshot payload shape from AgentStepLockedLeague's step runner. */
+/**
+ * The onSnapshot payload shape from AgentStepLockedLeague's step runner
+ * (RunAgentStepLockedLeagueOptions["onSnapshot"]). Kept as a local mirror —
+ * a type-only import of the real type drags the main repo's client-side
+ * type graph (vite/client globals etc.) into this standalone tsconfig.
+ */
 type SnapshotStepInput = {
   label: string;
   turnNumber: number;
   gameState: any;
   records: unknown[];
-};
-
-type PendingFinalSnapshot = {
-  input: SnapshotStepInput;
-  /** The built frame when a /global viewer forced a build; null when skipped. */
-  built: unknown;
 };
 
 type PendingDecision = {
@@ -170,6 +169,7 @@ class CoworldProtocolServer {
   // the loaded replay's already-compacted (<=80) snapshots for /global serving.
   private latestLiveSnapshot: unknown = null;
   private liveSnapshotCount = 0;
+  private liveFrameRefresher: (() => void) | null = null;
   private replaySnapshots: unknown[] = [];
   private spectatorMap: Record<string, unknown> | null = null;
   private spectatorReplay: Record<string, unknown> | null = null;
@@ -184,6 +184,10 @@ class CoworldProtocolServer {
         return;
       }
       if (url.pathname === "/global") {
+        // Build-skipping can leave latestLiveSnapshot up to stride-1 steps
+        // old while nobody watches; let the episode runner refresh it so the
+        // greeting below carries the newest state (no-op when fresh).
+        this.liveFrameRefresher?.();
         this.wsServer.handleUpgrade(request, socket, head, (websocket) => {
           this.globalSockets.add(websocket);
           websocket.on("close", () => this.globalSockets.delete(websocket));
@@ -289,6 +293,26 @@ class CoworldProtocolServer {
     return this.globalSockets.size > 0;
   }
 
+  /**
+   * Count one decision step for /global's snapshotCount. Split from
+   * recordSnapshot so the counter keeps meaning "decision steps" (an
+   * episode-progress heartbeat for external consumers) now that skipped
+   * steps record no frame, and extra records (connect-time refresh, the
+   * deferred final frame) don't correspond to new steps.
+   */
+  noteSnapshotStep(): void {
+    this.liveSnapshotCount += 1;
+  }
+
+  /**
+   * Called just before greeting a new /global viewer, so the episode runner
+   * can build a fresh frame when build-skipping left latestLiveSnapshot
+   * mid-stride stale.
+   */
+  setLiveFrameRefresher(refresher: () => void): void {
+    this.liveFrameRefresher = refresher;
+  }
+
   recordSnapshot(
     snapshot: unknown,
     map: Record<string, unknown> | null = null,
@@ -297,7 +321,6 @@ class CoworldProtocolServer {
       this.spectatorMap = map;
     }
     this.latestLiveSnapshot = snapshot;
-    this.liveSnapshotCount += 1;
     this.broadcastGlobal(this.statusSnapshot("snapshot", snapshot));
   }
 
@@ -943,26 +966,23 @@ async function runProxyWarEpisode(
   // decides BEFORE building whether a step's snapshot will be retained, so
   // steps that retention would discard skip the O(all-owned-tiles)
   // buildAgentSpectatorSnapshot entirely — unless a /global spectator is
-  // watching live, in which case every step still builds and broadcasts.
+  // watching live, in which case every step still builds and broadcasts. It
+  // also owns the final-frame bookkeeping: the artifact's LAST frame drives
+  // the spectator "Final standing" panel, so finalize() after the step loop
+  // appends the true final frame whenever stride skipping passed it over.
   const snapshotRetention = new CoworldSnapshotRetention<unknown>(
     COWORLD_MAX_RETAINED_SNAPSHOTS,
   );
   const spectatorSnapshots = snapshotRetention.snapshots;
-  // The newest snapshot used to be retained at every moment (decimation kept
-  // even indices, and the just-pushed entry landed on one); the spectator
-  // artifact's LAST frame drives its "Final standing" panel. Stride skipping
-  // can pass over the episode's last step, so remember the newest unretained
-  // step's raw inputs (cheap references — the game state and records are
-  // alive anyway) and build the true final frame after the step loop, when
-  // the game state no longer advances.
-  // `null as ...` keeps the declared union: assignments happen inside the
-  // onSnapshot closure, which TS's assignment narrowing cannot see.
-  let pendingFinalSnapshot = null as PendingFinalSnapshot | null;
-  const spectatorMapInfo = (gameState: any) => ({
-    width: gameState.width(),
-    height: gameState.height(),
-    gameMap: String(gameState.config().gameConfig().gameMap),
-    gameMapSize: String(gameState.config().gameConfig().gameMapSize),
+  // A /global viewer connecting mid-stride would otherwise be greeted with a
+  // frame up to stride-1 steps stale: build the newest step's frame on
+  // connect (no-op while frames are already flowing). Safe to build here —
+  // the mirror mutates game state only synchronously inside the step loop.
+  protocolServer.setLiveFrameRefresher(() => {
+    const frame = snapshotRetention.buildPendingFrame();
+    if (frame !== null) {
+      protocolServer.recordSnapshot(frame);
+    }
   });
   let memTelemetrySnapshots = 0;
   // stderr, NOT the winston logger: the episode logger is level "warn", and pod
@@ -1031,6 +1051,9 @@ async function runProxyWarEpisode(
         waitForMirrorCatchup: true,
       },
       onSnapshot: (snapshot: SnapshotStepInput) => {
+        // /global's snapshotCount stays an episode-progress heartbeat (one
+        // per decision step) even when the frame build below is skipped.
+        protocolServer.noteSnapshotStep();
         // Sampler-driven decimation (see CoworldSnapshotRetention): retained
         // snapshot heap stays O(1) in episode length. A full-length episode
         // DOES hit the cap (that is the point — it flattens snapshot heap
@@ -1040,27 +1063,15 @@ async function runProxyWarEpisode(
         // (message-derived game-record) and the result scores are unaffected.
         // Unretained steps skip the O(all-owned-tiles) snapshot build too
         // unless a /global spectator is watching live.
-        const retained = snapshotRetention.beginStep();
-        if (retained || protocolServer.hasSpectators()) {
-          const spectatorSnapshot = modules.buildAgentSpectatorSnapshot({
-            ...snapshot,
-            roster,
-          });
-          if (retained) {
-            pendingFinalSnapshot = null;
-            snapshotRetention.retain(spectatorSnapshot);
-          } else {
-            pendingFinalSnapshot = {
-              input: snapshot,
-              built: spectatorSnapshot,
-            };
-          }
+        const frame = snapshotRetention.step(
+          () => modules.buildAgentSpectatorSnapshot({ ...snapshot, roster }),
+          protocolServer.hasSpectators(),
+        );
+        if (frame !== null) {
           protocolServer.recordSnapshot(
-            spectatorSnapshot,
-            spectatorMapInfo(snapshot.gameState),
+            frame,
+            modules.spectatorReplayMap(snapshot.gameState),
           );
-        } else {
-          pendingFinalSnapshot = { input: snapshot, built: null };
         }
         memTelemetrySnapshots += 1;
         // Hosted default stays every-10 (lean log tail); local repro can set
@@ -1074,25 +1085,14 @@ async function runProxyWarEpisode(
       },
       log,
     });
-    if (pendingFinalSnapshot !== null) {
-      // The last step's snapshot wasn't retained (and possibly not built).
-      // The game state stopped advancing when the step loop returned, so
-      // building from the saved inputs now is identical to having built it
-      // inside the final onSnapshot call. Re-record only when it was never
-      // built — a spectator-only build already went out live.
-      const finalSnapshot =
-        pendingFinalSnapshot.built ??
-        modules.buildAgentSpectatorSnapshot({
-          ...pendingFinalSnapshot.input,
-          roster,
-        });
-      snapshotRetention.appendFinal(finalSnapshot);
-      if (pendingFinalSnapshot.built === null) {
-        protocolServer.recordSnapshot(
-          finalSnapshot,
-          spectatorMapInfo(pendingFinalSnapshot.input.gameState),
-        );
-      }
+    // Append the true final frame when stride skipping passed over the last
+    // step. The game state stopped advancing when the step loop returned, so
+    // finalize()'s deferred build is identical to one made inside the final
+    // onSnapshot call. A returned frame was never broadcast (spectator-forced
+    // builds already went out live), so record it.
+    const finalFrame = snapshotRetention.finalize();
+    if (finalFrame !== null) {
+      protocolServer.recordSnapshot(finalFrame);
     }
     const completedAt = Date.now();
     clearInterval(memTelemetryTimer);

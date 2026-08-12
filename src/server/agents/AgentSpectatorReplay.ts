@@ -202,6 +202,20 @@ export function buildAgentSpectatorSnapshot(input: {
   };
 }
 
+/**
+ * The spectator map block. Exported so the Coworld adapter's live /global
+ * broadcasts carry the exact same shape as the written artifact — a second
+ * hand-maintained copy would silently drift.
+ */
+export function spectatorReplayMap(game: Game): AgentSpectatorReplay["map"] {
+  return {
+    width: game.width(),
+    height: game.height(),
+    gameMap: String(game.config().gameConfig().gameMap),
+    gameMapSize: String(game.config().gameConfig().gameMapSize),
+  };
+}
+
 export function buildAgentSpectatorReplay(input: {
   runID: string;
   matchID: string;
@@ -223,12 +237,7 @@ export function buildAgentSpectatorReplay(input: {
     readOnly: true,
     spectatorOccupiesPlayerSlot: false,
     replayKind: "artifact-snapshot-replay",
-    map: {
-      width: input.finalGameState.width(),
-      height: input.finalGameState.height(),
-      gameMap: String(input.finalGameState.config().gameConfig().gameMap),
-      gameMapSize: String(input.finalGameState.config().gameConfig().gameMapSize),
-    },
+    map: spectatorReplayMap(input.finalGameState),
     roster: input.roster,
     snapshots: input.snapshots,
     notes: [
