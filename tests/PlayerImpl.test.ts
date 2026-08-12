@@ -88,10 +88,20 @@ describe("PlayerImpl", () => {
 
   test("Can't send alliance requests when dead", () => {
     // conquer other
-    const otherTiles = other.tiles();
+    const otherTiles = Array.from(other.tiles());
     for (const tile of otherTiles) {
       player.conquer(tile);
     }
     expect(other.canSendAllianceRequest(player)).toBe(false);
+  });
+
+  test("tiles returns a live view", () => {
+    const tiles = player.tiles();
+    const tile = game.ref(50, 50);
+
+    expect(player.tiles()).toBe(tiles);
+    expect(tiles.has(tile)).toBe(false);
+    player.conquer(tile);
+    expect(tiles.has(tile)).toBe(true);
   });
 });

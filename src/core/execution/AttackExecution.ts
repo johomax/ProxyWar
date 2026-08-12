@@ -368,7 +368,7 @@ export class AttackExecution implements Execution {
     this.mg.conquerPlayer(this._owner, target);
 
     for (let i = 0; i < 10; i++) {
-      for (const tile of target.tiles()) {
+      for (const tile of Array.from(target.tiles())) {
         let borders = false;
         this.mg.forEachNeighbor(tile, (t) => {
           if (!borders && this.mg.owner(t) === this._owner) {
