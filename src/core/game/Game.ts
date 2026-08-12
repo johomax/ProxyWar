@@ -755,7 +755,7 @@ export interface Player {
     validTiles?: TileRef[] | null,
   ): TileRef | false;
   /** Cheap tile-independent gates (disabled, gold, alive) that canBuild also applies. */
-  canBuildUnitType(unitType: UnitType, knownCost?: Gold | null): boolean;
+  canBuildUnitType(unitType: UnitType): boolean;
   buildUnit<T extends UnitType>(
     type: T,
     spawnTile: TileRef,

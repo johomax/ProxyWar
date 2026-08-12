@@ -1329,23 +1329,63 @@ export class PlayerImpl implements Player {
     tile: TileRef,
     validTiles: TileRef[] | null = null,
   ): TileRef | false {
-    const tiles = validTiles ?? this.validStructureSpawnTiles(tile);
-    return (
-      findClosestBy(tiles, (t) => this.mg.euclideanDistSquared(t, tile)) ??
-      false
-    );
+    // validTiles is nearest-first, so index 0 is the spawn tile.
+    return validTiles !== null
+      ? (validTiles[0] ?? false)
+      : this.closestStructureSpawnTile(tile);
   }
 
-  /** Owned, unblocked tiles within the structure search radius, in no particular order. */
+  /**
+   * Owned, unblocked tiles within the structure search radius.
+   * Index 0 is the nearest tile; the rest are in discovery order, NOT sorted.
+   */
   private validStructureSpawnTiles(tile: TileRef): TileRef[] {
+    const valid: TileRef[] = [];
+    let bestIndex = -1;
+    let bestDistSquared = Infinity;
+    this.forEachStructureSpawnTile(tile, (t) => {
+      const distSquared = this.mg.euclideanDistSquared(t, tile);
+      if (distSquared < bestDistSquared) {
+        bestDistSquared = distSquared;
+        bestIndex = valid.length;
+      }
+      valid.push(t);
+    });
+    if (bestIndex > 0) {
+      [valid[0], valid[bestIndex]] = [valid[bestIndex], valid[0]];
+    }
+    return valid;
+  }
+
+  /** Nearest valid spawn tile, without materializing the candidate list. */
+  private closestStructureSpawnTile(tile: TileRef): TileRef | false {
+    let best: TileRef | false = false;
+    let bestDistSquared = Infinity;
+    this.forEachStructureSpawnTile(tile, (t) => {
+      const distSquared = this.mg.euclideanDistSquared(t, tile);
+      if (distSquared < bestDistSquared) {
+        bestDistSquared = distSquared;
+        best = t;
+      }
+    });
+    return best;
+  }
+
+  /** Visits each owned tile in range that no structure blocks, in discovery order. */
+  private forEachStructureSpawnTile(
+    tile: TileRef,
+    visit: (t: TileRef) => void,
+  ): void {
     if (this.mg.owner(tile) !== this) {
-      return [];
+      return;
     }
     const searchRadius = 15;
     const searchRadiusSquared = searchRadius ** 2;
     const minDist = this.mg.config().structureMinDist();
     const minDistSquared = minDist ** 2;
 
+    // A structure can only block a candidate within minDist of it, and every
+    // candidate is within searchRadius of `tile`.
     const blockerTiles = this.mg
       .nearbyUnits(
         tile,
@@ -1362,7 +1402,6 @@ export class PlayerImpl implements Player {
       );
     });
 
-    const valid: TileRef[] = [];
     for (const t of nearbyTiles) {
       let blocked = false;
       for (const blockerTile of blockerTiles) {
@@ -1372,10 +1411,9 @@ export class PlayerImpl implements Player {
         }
       }
       if (!blocked) {
-        valid.push(t);
+        visit(t);
       }
     }
-    return valid;
   }
 
   tradeShipSpawn(targetTile: TileRef): TileRef | false {

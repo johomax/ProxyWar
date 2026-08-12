@@ -199,10 +199,11 @@ describe("PlayerImpl", () => {
         );
       }
 
-      const tieSpawn = player.canBuild(UnitType.DefensePost, tieTarget);
-      expect(tieSpawn).not.toBe(false);
-      expect(game.euclideanDistSquared(tieSpawn as TileRef, tieTarget)).toBe(
-        minStructureDistance ** 2,
+      // Exact tie-break, not just "some nearest tile": many tiles sit at exactly
+      // minStructureDistance (for 10, both 10² and 6²+8² qualify). Pinning the
+      // winning TileRef locks the discovery order that replays depend on.
+      expect(player.canBuild(UnitType.DefensePost, tieTarget)).toBe(
+        game.ref(25 + minStructureDistance, 25),
       );
       expect(
         player.canBuild(UnitType.DefensePost, unownedTarget, [tieTarget]),
