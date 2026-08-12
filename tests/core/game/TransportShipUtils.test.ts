@@ -17,8 +17,8 @@ describe("TransportShipUtils", () => {
     targetTransportTile(secondGame, secondGame.ref(2, 2));
 
     expect(closestShore.mock.instances[0]).toBe(closestShore.mock.instances[1]);
-    expect(closestShore.mock.instances[2]).not.toBe(
-      closestShore.mock.instances[0],
-    );
+    expect(
+      closestShore.mock.instances[2] === closestShore.mock.instances[0],
+    ).toBe(false);
   });
 });
