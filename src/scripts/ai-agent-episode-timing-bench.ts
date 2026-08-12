@@ -26,31 +26,37 @@ const OUT = process.env.BENCH_OUT ?? "/dev/stdout";
 const imp = (rel: string): Promise<Record<string, any>> =>
   import(pathToFileURL(path.join(repo, rel)).href);
 
-const [configMod, gameMod, terrainMod, serverMod, leagueMod, mirrorMod, stepMod] =
-  await Promise.all([
-    imp("src/core/configuration/Config.ts"),
-    imp("src/core/game/Game.ts"),
-    imp("src/core/game/TerrainMapLoader.ts"),
-    imp("src/server/GameServer.ts"),
-    imp("src/server/agents/AgentLeagueMatch.ts"),
-    imp("src/server/agents/AgentLocalGameMirror.ts"),
-    imp("src/server/agents/AgentStepLockedLeague.ts"),
-  ]);
+const [
+  configMod,
+  gameMod,
+  terrainMod,
+  serverMod,
+  leagueMod,
+  mirrorMod,
+  stepMod,
+] = await Promise.all([
+  imp("src/core/configuration/Config.ts"),
+  imp("src/core/game/Game.ts"),
+  imp("src/core/game/TerrainMapLoader.ts"),
+  imp("src/server/GameServer.ts"),
+  imp("src/server/agents/AgentLeagueMatch.ts"),
+  imp("src/server/agents/AgentLocalGameMirror.ts"),
+  imp("src/server/agents/AgentStepLockedLeague.ts"),
+]);
 const obsMod = await imp("src/server/agents/AgentObservationBuilder.ts");
 const winston = (await import("winston")).default;
 
-const {
-  GameMapType,
-  GameMapSize,
-  GameMode,
-  GameType,
-  Difficulty,
-  UnitType,
-} = { ...gameMod, ...configMod } as any;
+const { GameMapType, GameMapSize, GameMode, GameType, Difficulty, UnitType } = {
+  ...gameMod,
+  ...configMod,
+} as any;
 const { loadTerrainMap } = terrainMod as any;
 const { GameServer, GameEnv } = { ...serverMod, ...configMod } as any;
-const { AgentLeagueMatchRunner, createAgentParticipants, buildSpawnCandidates } =
-  leagueMod as any;
+const {
+  AgentLeagueMatchRunner,
+  createAgentParticipants,
+  buildSpawnCandidates,
+} = leagueMod as any;
 const { AgentLocalGameMirror } = mirrorMod as any;
 const { runAgentStepLockedLeague } = stepMod as any;
 const { AgentObservationBuilder } = obsMod as any;
