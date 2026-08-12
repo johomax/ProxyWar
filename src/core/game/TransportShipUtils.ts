@@ -2,6 +2,17 @@ import { SpatialQuery } from "../pathfinding/spatial/SpatialQuery";
 import { Game, Player, UnitType } from "./Game";
 import { TileRef } from "./GameMap";
 
+const spatialQueries = new WeakMap<Game, SpatialQuery>();
+
+function spatialQuery(game: Game): SpatialQuery {
+  let spatial = spatialQueries.get(game);
+  if (spatial === undefined) {
+    spatial = new SpatialQuery(game);
+    spatialQueries.set(game, spatial);
+  }
+  return spatial;
+}
+
 export function canBuildTransportShip(
   game: Game,
   player: Player,
@@ -26,13 +37,11 @@ export function canBuildTransportShip(
     return false;
   }
 
-  const spatial = new SpatialQuery(game);
-  return spatial.closestShoreByWater(player, dst) ?? false;
+  return spatialQuery(game).closestShoreByWater(player, dst) ?? false;
 }
 
 export function targetTransportTile(gm: Game, tile: TileRef): TileRef | null {
-  const spatial = new SpatialQuery(gm);
-  return spatial.closestShore(gm.owner(tile), tile);
+  return spatialQuery(gm).closestShore(gm.owner(tile), tile);
 }
 
 export function bestShoreDeploymentSource(
@@ -40,6 +49,5 @@ export function bestShoreDeploymentSource(
   player: Player,
   dst: TileRef,
 ): TileRef | null {
-  const spatial = new SpatialQuery(gm);
-  return spatial.closestShoreByWater(player, dst);
+  return spatialQuery(gm).closestShoreByWater(player, dst);
 }

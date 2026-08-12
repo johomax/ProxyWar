@@ -1,7 +1,7 @@
 import { Game, Player, TerraNullius } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { DebugSpan } from "../../utilities/DebugSpan";
-import { PathFinding } from "../PathFinder";
+import { WaterPathFinder } from "../PathFinder";
 import { AStarWaterBounded } from "../algorithms/AStar.WaterBounded";
 
 type Owner = Player | TerraNullius;
@@ -10,6 +10,7 @@ const REFINE_MAX_SEARCH_AREA = 100 * 100;
 
 export class SpatialQuery {
   private boundedAStar: AStarWaterBounded | null = null;
+  private waterPathFinder: WaterPathFinder | null = null;
 
   constructor(private game: Game) {}
 
@@ -20,6 +21,11 @@ export class SpatialQuery {
     );
 
     return this.boundedAStar;
+  }
+
+  private getWaterPathFinder(): WaterPathFinder {
+    this.waterPathFinder ??= new WaterPathFinder(this.game);
+    return this.waterPathFinder;
   }
 
   /**
@@ -100,7 +106,7 @@ export class SpatialQuery {
       const shores = Array.from(player.borderTiles()).filter(isValidTile);
       if (shores.length === 0) return null;
 
-      const path = PathFinding.Water(gm).findPath(shores, target);
+      const path = this.getWaterPathFinder().findPath(shores, target);
       if (!path || path.length === 0) return null;
 
       return DebugSpan.wrap("SpatialQuery.refineStartTile", () =>
