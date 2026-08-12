@@ -13,18 +13,36 @@
  * ever see (not retained, no live /global spectator watching).
  *
  * Retention rule: keep steps that are multiples of a stride that starts at 1
- * and doubles every time the retained array overflows `maxRetained` and is
- * halved by even-index decimation. The retained array is therefore always a
- * run of consecutive stride multiples starting at step 0 — evenly spaced,
- * first snapshot always kept, at most `maxRetained` entries (`appendFinal`
- * may add one more).
+ * and doubles every time the retained array overflows the cap and is halved
+ * by even-index decimation. The retained array is therefore always a run of
+ * consecutive stride multiples starting at step 0 — evenly spaced, first
+ * snapshot always kept, at most the cap's entries (`appendFinal` may add one
+ * more; an odd cap is normalized up to even, see the constructor).
  */
 export class CoworldSnapshotRetention<T> {
   readonly snapshots: T[] = [];
+  private readonly maxRetained: number;
   private stride = 1;
   private stepsSeen = 0;
 
-  constructor(private readonly maxRetained: number) {}
+  constructor(maxRetained: number) {
+    if (!Number.isFinite(maxRetained) || maxRetained < 1) {
+      // Fail loud at episode startup: a NaN cap would flip the decimation
+      // guard below to "decimate on every push" and silently destroy the
+      // replay (the caller sanitizes env input; this catches everyone else).
+      throw new Error(
+        `CoworldSnapshotRetention requires a positive finite cap, got ${maxRetained}`,
+      );
+    }
+    // Even cap only: decimating the odd-length overflow array keeps its final
+    // (even) index, so the just-pushed newest snapshot always survives — the
+    // episode runner's final-frame bookkeeping relies on that. An odd cap
+    // would drop the newest entry at every decimation, and if that entry was
+    // the episode's last step, the artifact's "Final standing" frame would go
+    // a full stride stale.
+    const floored = Math.floor(maxRetained);
+    this.maxRetained = floored + (floored % 2);
+  }
 
   /**
    * Count one snapshot step. True when this step's snapshot is retained and

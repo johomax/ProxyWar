@@ -45,23 +45,51 @@ describe("CoworldSnapshotRetention", () => {
     [16, 1],
     [16, 5],
     [16, 1000],
-    [17, 1000], // odd env-override cap: decimation drops the newest entry
+    [17, 1000], // odd env-override cap: normalized up to 18
     [48, 5000],
   ])(
     "cap %i / %i steps: kept set is consecutive stride multiples from 0",
     (cap, steps) => {
       const { kept, maxLength } = run(cap, steps);
-      expect(maxLength).toBeLessThanOrEqual(cap);
+      // An odd cap is normalized up to even (so decimation never drops the
+      // newest entry), hence the +1 allowance.
+      expect(maxLength).toBeLessThanOrEqual(cap + (cap % 2));
       expect(kept[0]).toBe(0);
       const spacing = kept.length > 1 ? kept[1] - kept[0] : 1;
       expect(Math.log2(spacing) % 1).toBe(0);
       for (let i = 1; i < kept.length; i++) {
         expect(kept[i] - kept[i - 1]).toBe(spacing);
       }
-      // The newest kept step trails the newest seen step by under two
-      // strides (one stride, plus one more right after an odd-cap
-      // decimation drops the just-pushed entry).
-      expect(steps - 1 - kept[kept.length - 1]).toBeLessThan(2 * spacing);
+      // The newest kept step trails the newest seen step by under one stride.
+      expect(steps - 1 - kept[kept.length - 1]).toBeLessThan(spacing);
+    },
+  );
+
+  it("never drops the newest retained entry, even with an odd cap", () => {
+    // Regression: an odd cap used to let decimation discard the just-pushed
+    // snapshot. If that push was the episode's LAST step, the runner (which
+    // clears its pending-final slot on retained steps) lost the true final
+    // frame and the artifact's "Final standing" went a full stride stale.
+    const sampler = new CoworldSnapshotRetention<number>(17);
+    let lastRetained = -1;
+    for (let step = 0; step < 1000; step++) {
+      if (sampler.beginStep()) {
+        sampler.retain(step);
+        lastRetained = step;
+        expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(step);
+      }
+    }
+    expect(sampler.snapshots[sampler.snapshots.length - 1]).toBe(lastRetained);
+  });
+
+  it.each([Number.NaN, Infinity, 0, -3])(
+    "rejects invalid cap %s instead of decimating every push",
+    (cap) => {
+      // NaN in particular: `length <= NaN` is always false, which would turn
+      // the sampler into "decimate on every push" and destroy the replay.
+      expect(() => new CoworldSnapshotRetention<number>(cap)).toThrow(
+        /positive finite cap/,
+      );
     },
   );
 

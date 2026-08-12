@@ -70,9 +70,17 @@ const proxyWarStaticRoot = path.join(proxyWarRepo, "static");
 //      would discard are not even BUILT — each build materializes every
 //      living player's tile set, O(all owned land tiles) per step — unless a
 //      /global spectator is connected and needs the live frame.
+const requestedMaxRetainedSnapshots = Number(
+  process.env.PROXYWAR_MAX_RETAINED_SNAPSHOTS ?? "48",
+);
 const COWORLD_MAX_RETAINED_SNAPSHOTS = Math.max(
   16,
-  Number(process.env.PROXYWAR_MAX_RETAINED_SNAPSHOTS ?? "48"),
+  // A malformed override falls back to the default: Math.max(16, NaN) is NaN,
+  // which CoworldSnapshotRetention rejects (it would otherwise decimate on
+  // every push and destroy the replay).
+  Number.isFinite(requestedMaxRetainedSnapshots)
+    ? requestedMaxRetainedSnapshots
+    : 48,
 );
 const proxyWarPublicRunArtifacts = new Set<string>(coworldPublicRunArtifacts);
 
@@ -86,13 +94,16 @@ type LegalActionView = {
   metadata?: Record<string, unknown>;
 };
 
+/** The onSnapshot payload shape from AgentStepLockedLeague's step runner. */
+type SnapshotStepInput = {
+  label: string;
+  turnNumber: number;
+  gameState: any;
+  records: unknown[];
+};
+
 type PendingFinalSnapshot = {
-  input: {
-    label: string;
-    turnNumber: number;
-    gameState: any;
-    records: unknown[];
-  };
+  input: SnapshotStepInput;
   /** The built frame when a /global viewer forced a build; null when skipped. */
   built: unknown;
 };
@@ -1019,12 +1030,7 @@ async function runProxyWarEpisode(
         requireWinner: false,
         waitForMirrorCatchup: true,
       },
-      onSnapshot: (snapshot: {
-        label: string;
-        turnNumber: number;
-        gameState: any;
-        records: unknown[];
-      }) => {
+      onSnapshot: (snapshot: SnapshotStepInput) => {
         // Sampler-driven decimation (see CoworldSnapshotRetention): retained
         // snapshot heap stays O(1) in episode length. A full-length episode
         // DOES hit the cap (that is the point — it flattens snapshot heap
@@ -1087,7 +1093,6 @@ async function runProxyWarEpisode(
           spectatorMapInfo(pendingFinalSnapshot.input.gameState),
         );
       }
-      pendingFinalSnapshot = null;
     }
     const completedAt = Date.now();
     clearInterval(memTelemetryTimer);
