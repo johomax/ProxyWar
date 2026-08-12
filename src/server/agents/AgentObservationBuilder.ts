@@ -620,6 +620,9 @@ export class AgentObservationBuilder {
   }
 
   private buildOptions(gameState: Game, player: Player): AgentBuildOption[] {
+    const sortedOwnedTiles = Array.from(player.tiles()).sort(
+      buildSearchTileComparator(gameState, player.spawnTile()),
+    );
     const candidates: Array<{
       unit: AgentBuildOption["unit"];
       role: AgentBuildOption["role"];
@@ -664,7 +667,12 @@ export class AgentObservationBuilder {
     const options: AgentBuildOption[] = [];
 
     for (const option of candidates) {
-      const target = this.findBuildTarget(gameState, player, option.unit);
+      const target = this.findBuildTarget(
+        gameState,
+        player,
+        option.unit,
+        sortedOwnedTiles,
+      );
       if (target === null) {
         continue;
       }
@@ -690,6 +698,7 @@ export class AgentObservationBuilder {
     gameState: Game,
     player: Player,
     unit: AgentBuildOption["unit"],
+    sortedOwnedTiles: readonly number[],
   ): BuildTargetCandidate | null {
     let best: BuildTargetCandidate | null = null;
     let bestScore = Number.NEGATIVE_INFINITY;
@@ -701,10 +710,12 @@ export class AgentObservationBuilder {
     const borderTiles = Array.from(player.borderTiles());
     const hostileFrontTiles = this.hostileFrontTiles(gameState, player);
     const incomingFrontTiles = this.incomingAttackFrontTiles(gameState, player);
-    for (const tile of this.buildSearchTiles(gameState, player, unit).slice(
-      0,
-      buildCandidateLimit(unit),
-    )) {
+    for (const tile of this.buildSearchTiles(
+      gameState,
+      player,
+      unit,
+      sortedOwnedTiles,
+    ).slice(0, buildCandidateLimit(unit))) {
       const buildTile = player.canBuild(unit, tile);
       if (buildTile !== false) {
         const placement = this.buildPlacementAnalysis(
@@ -737,33 +748,24 @@ export class AgentObservationBuilder {
     gameState: Game,
     player: Player,
     unit: AgentBuildOption["unit"],
-  ): number[] {
-    const tiles = Array.from(player.tiles());
-    const spawnTile = player.spawnTile();
+    sortedOwnedTiles: readonly number[],
+  ): readonly number[] {
     let source: number[];
     if (unit === UnitType.DefensePost) {
-      source = Array.from(player.borderTiles());
+      const borderTiles = player.borderTiles();
+      return sortedOwnedTiles.filter((tile) => borderTiles.has(tile));
     } else if (unit === UnitType.Port) {
-      source = tiles.filter((tile) => gameState.isShore(tile));
+      return sortedOwnedTiles.filter((tile) => gameState.isShore(tile));
     } else if (unit === UnitType.Warship) {
       source = this.waterTilesNearPorts(gameState, player);
     } else if (BuildableAttacks.has(unit)) {
       return this.nukeTargetTiles(gameState, player);
     } else {
-      source = tiles;
+      return sortedOwnedTiles;
     }
-    return source.sort((a, b) => {
-      if (spawnTile === undefined) {
-        return a - b;
-      }
-      // Manhattan distance, not |Δref|: linear tile-ref arithmetic treats a
-      // tile one row down as ~a full map-width away, which row-biased the
-      // candidate pool feeding the buildCandidateLimit() truncation.
-      return (
-        gameState.manhattanDist(a, spawnTile) -
-          gameState.manhattanDist(b, spawnTile) || a - b
-      );
-    });
+    return source.sort(
+      buildSearchTileComparator(gameState, player.spawnTile()),
+    );
   }
 
   private buildPlacementAnalysis(
@@ -1792,6 +1794,20 @@ function coordinationQuickChatOptions(
       },
     ];
   });
+}
+
+function buildSearchTileComparator(
+  gameState: Game,
+  spawnTile: number | undefined,
+): (a: number, b: number) => number {
+  if (spawnTile === undefined) {
+    return (a, b) => a - b;
+  }
+  // Manhattan distance, not |Δref|: linear tile-ref arithmetic treats a tile
+  // one row down as ~a full map-width away, which row-biased candidate pools.
+  return (a, b) =>
+    gameState.manhattanDist(a, spawnTile) -
+      gameState.manhattanDist(b, spawnTile) || a - b;
 }
 
 function buildCandidateLimit(unit: AgentBuildOption["unit"]): number {

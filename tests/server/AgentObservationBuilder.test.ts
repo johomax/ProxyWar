@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AttackExecution } from "../../src/core/execution/AttackExecution";
 import { SpawnExecution } from "../../src/core/execution/SpawnExecution";
 import { AllianceRequestExecution } from "../../src/core/execution/alliance/AllianceRequestExecution";
 import {
+  BuildableAttacks,
   Game,
+  Player,
   PlayerInfo,
   PlayerType,
   UnitType,
@@ -100,6 +102,101 @@ function disconnectedSeasGame(): {
   return { game, agent, rival, unreachableShore, reachableShore };
 }
 
+const BUILD_OPTION_UNITS = [
+  UnitType.DefensePost,
+  UnitType.City,
+  UnitType.Port,
+  UnitType.Factory,
+  UnitType.SAMLauncher,
+  UnitType.MissileSilo,
+  UnitType.AtomBomb,
+  UnitType.HydrogenBomb,
+  UnitType.MIRV,
+] as const;
+
+type AgentObservationBuilderInternals = {
+  buildOptions(gameState: Game, player: Player): unknown;
+  nukeTargetTiles(gameState: Game, player: Player): number[];
+};
+
+function midGameBuildSearchGame(): Game {
+  const width = 208;
+  const height = 108;
+  const grid = Array.from({ length: height }, (_, y) =>
+    Array.from({ length: width }, (_, x) =>
+      x === 0 || y === 0 || x === width - 1 || y === height - 1 ? W : L,
+    ),
+  ).flat();
+  const game = createPathfindingGame({ width, height, grid });
+  const agent = new PlayerInfo(
+    "Agent",
+    PlayerType.Human,
+    "CLNT_AGENT",
+    "P_AGENT",
+  );
+  const rival = new PlayerInfo(
+    "Rival",
+    PlayerType.Human,
+    "CLNT_RIVAL",
+    "P_RIVAL",
+  );
+  spawnPlayers(game, [
+    { info: agent, x: 20, y: height / 2 },
+    { info: rival, x: width - 21, y: height / 2 },
+  ]);
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const owner = x < width / 2 ? agent : rival;
+      game.player(owner.id).conquer(game.ref(x, y));
+    }
+  }
+  return game;
+}
+
+function legacyBuildSearchTiles(
+  builder: AgentObservationBuilderInternals,
+  gameState: Game,
+  player: Player,
+  unit: UnitType,
+): number[] {
+  const tiles = Array.from(player.tiles());
+  const spawnTile = player.spawnTile();
+  let source: number[];
+  if (unit === UnitType.DefensePost) {
+    source = Array.from(player.borderTiles());
+  } else if (unit === UnitType.Port) {
+    source = tiles.filter((tile) => gameState.isShore(tile));
+  } else if (BuildableAttacks.has(unit)) {
+    return builder.nukeTargetTiles(gameState, player);
+  } else {
+    source = tiles;
+  }
+  return source.sort((a, b) => {
+    if (spawnTile === undefined) {
+      return a - b;
+    }
+    return (
+      gameState.manhattanDist(a, spawnTile) -
+        gameState.manhattanDist(b, spawnTile) || a - b
+    );
+  });
+}
+
+function legacyBuildCandidateLimit(unit: UnitType): number {
+  switch (unit) {
+    case UnitType.DefensePost:
+      return 400;
+    case UnitType.City:
+    case UnitType.Factory:
+    case UnitType.SAMLauncher:
+    case UnitType.MissileSilo:
+      return 240;
+    default:
+      return 120;
+  }
+}
+
 function ally(
   game: Awaited<ReturnType<typeof threePlayerGame>>,
   a: string,
@@ -112,6 +209,48 @@ function ally(
   game.addExecution(new AllianceRequestExecution(pb, pa.id()));
   game.executeNextTick();
 }
+
+describe("AgentObservationBuilder build search", () => {
+  it("preserves every legacy candidate list while reading owned tiles once", () => {
+    const game = midGameBuildSearchGame();
+    const player = game.player("P_AGENT");
+    const builder = new AgentObservationBuilder();
+    const internals = builder as unknown as AgentObservationBuilderInternals;
+    const expected = new Map<UnitType, number[]>();
+
+    expect(player.numTilesOwned()).toBeGreaterThan(240);
+    expect(
+      Array.from(player.tiles()).filter((tile) => game.isShore(tile)).length,
+    ).toBeGreaterThan(120);
+    expect(player.borderTiles().size).toBeGreaterThan(400);
+    for (const unit of BUILD_OPTION_UNITS) {
+      expected.set(
+        unit,
+        legacyBuildSearchTiles(internals, game, player, unit).slice(
+          0,
+          legacyBuildCandidateLimit(unit),
+        ),
+      );
+    }
+
+    const actual = new Map<UnitType, number[]>();
+    for (const unit of BUILD_OPTION_UNITS) {
+      actual.set(unit, []);
+    }
+    const tiles = vi.spyOn(player, "tiles");
+    vi.spyOn(player, "canBuild").mockImplementation((unit, tile) => {
+      actual.get(unit)?.push(tile);
+      return false;
+    });
+
+    internals.buildOptions(game, player);
+
+    expect(tiles).toHaveBeenCalledTimes(1);
+    for (const unit of BUILD_OPTION_UNITS) {
+      expect(actual.get(unit)).toEqual(expected.get(unit));
+    }
+  });
+});
 
 describe("AgentObservationBuilder rival-rival coalition graph", () => {
   it("surfaces which rivals are allied with EACH OTHER (not just with the agent)", async () => {
