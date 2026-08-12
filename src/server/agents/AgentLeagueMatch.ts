@@ -146,6 +146,7 @@ export interface RunAgentDecisionTurnOptions {
  */
 const MAX_STAMPED_DEAL_ACTION_ID_LENGTH = 120;
 const MAX_STAMPED_DEAL_REJECTION_LENGTH = 200;
+const RECENT_COMMUNICATION_RECORD_LIMIT = 18;
 
 interface DealSlotApplicationEvidence {
   stamps: NonNullable<AgentDecision["metadata"]>;
@@ -192,6 +193,10 @@ export function createAgentParticipants(
 export class AgentLeagueMatchRunner {
   private readonly log: Logger;
   private readonly records: AgentDecisionRecord[] = [];
+  private readonly recentCommunicationRecordsByAgentID = new Map<
+    string,
+    AgentDecisionRecord[]
+  >();
   private readonly retainTacticalAffordances: boolean;
   private readonly observationBuilder: AgentObservationBuilder;
   private readonly legalActionBuilder: LegalActionBuilder;
@@ -403,10 +408,7 @@ export class AgentLeagueMatchRunner {
       const baseObservation =
         recentCommunications.length === 0
           ? initialObservation
-          : this.observationBuilder.build({
-              ...observationInput,
-              recentCommunications,
-            });
+          : { ...initialObservation, recentCommunications };
       // Bilateral deals block (flag-gated; undefined leaves the observation
       // object untouched, byte-identical to shipped behavior). Privacy: the
       // manager returns only this seat's own proposals and deals.
@@ -1069,7 +1071,30 @@ export class AgentLeagueMatchRunner {
       result: input.result,
     };
     this.records.push(record);
+    this.rememberCommunicationRecord(record);
     return record;
+  }
+
+  private rememberCommunicationRecord(record: AgentDecisionRecord): void {
+    if (!record.result.accepted || !isCommunicationRecord(record)) {
+      return;
+    }
+    for (const participant of this.options.participants) {
+      const agentID = participant.runner.agentID;
+      if (agentID === record.agentID) {
+        continue;
+      }
+      const recentRecords =
+        this.recentCommunicationRecordsByAgentID.get(agentID) ?? [];
+      recentRecords.push(record);
+      if (recentRecords.length > RECENT_COMMUNICATION_RECORD_LIMIT) {
+        recentRecords.splice(
+          0,
+          recentRecords.length - RECENT_COMMUNICATION_RECORD_LIMIT,
+        );
+      }
+      this.recentCommunicationRecordsByAgentID.set(agentID, recentRecords);
+    }
   }
 
   private recentDecisionsFor(
@@ -1118,14 +1143,11 @@ export class AgentLeagueMatchRunner {
     observation: AgentObservation,
   ): AgentCommunicationSignal[] {
     const ownPlayerID = observation.ownState?.playerID ?? null;
-    return this.records
-      .filter(
-        (record) =>
-          record.agentID !== participant.runner.agentID &&
-          record.result.accepted &&
-          isCommunicationRecord(record),
-      )
-      .slice(-18)
+    return (
+      this.recentCommunicationRecordsByAgentID.get(
+        participant.runner.agentID,
+      ) ?? []
+    )
       .map((record) => {
         const metadata = record.chosenActionMetadata ?? {};
         const sender = observation.visiblePlayers.find(
