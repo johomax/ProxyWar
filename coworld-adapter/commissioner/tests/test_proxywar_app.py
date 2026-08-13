@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from commissioners.common.protocol import (
     EpisodeRequest,
     LeagueInfo,
     MembershipInfo,
+    RoundInfo,
     RoundStart,
     ScheduleRoundsRequest,
     VariantInfo,
@@ -213,6 +215,47 @@ def test_qualifier_self_play_survives_scheduling_protocol_round_trip() -> None:
         episode.policy_version_ids == [QUALIFIER_POLICY_ID, QUALIFIER_POLICY_ID]
         for episode in episodes.episodes
     )
+
+
+def test_finished_round_frees_the_next_round_back_to_back() -> None:
+    """schedule_interval_minutes: 1 makes rounds back-to-back: a completed
+    round older than the current minute slot no longer holds the division."""
+    competition = DivisionInfo(id=DIVISION_ID, name="Competition", level=1)
+    memberships = [
+        MembershipInfo(
+            id=UUID(f"00000000-0000-0000-0006-{index:012d}"),
+            league_id=LEAGUE_ID,
+            division_id=DIVISION_ID,
+            policy_version_id=UUID(f"00000000-0000-0000-0003-{index:012d}"),
+            player_id=f"champion-{index}",
+            status="competing",
+            substatus="active",
+            is_champion=True,
+        )
+        for index in range(2)
+    ]
+    previous = RoundInfo(
+        id=UUID("00000000-0000-0000-0007-000000000001"),
+        division_id=DIVISION_ID,
+        round_number=41,
+        status="completed",
+        created_at=(datetime.now(UTC) - timedelta(minutes=2)).isoformat(),
+    )
+
+    def scheduled_with(rounds: list[RoundInfo]) -> int:
+        response = schedule_rounds_for_request(
+            commissioner(),
+            ScheduleRoundsRequest(
+                league=LeagueInfo(id=LEAGUE_ID, commissioner_key="container"),
+                divisions=[competition],
+                active_memberships=memberships,
+                recent_rounds=rounds,
+            ),
+        )
+        return len(response.rounds)
+
+    assert scheduled_with([previous]) == 1
+    assert scheduled_with([previous.model_copy(update={"status": "running"})]) == 0
 
 
 def test_live_17_champion_field_schedules_every_entrant() -> None:

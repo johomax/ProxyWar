@@ -149,6 +149,8 @@ def _leaderboard_rules_description() -> str:
 
 
 def _duration_text(minutes: int) -> str:
+    if minutes == 1:
+        return "minute"
     if minutes == 30:
         return "half hour"
     return f"{_count_text(minutes)} {_plural_word(minutes, 'minute')}"
@@ -163,7 +165,8 @@ def _join_text(items: list[str]) -> str:
 
 
 def _schedule_slot_description(config: RoundSchedulingConfig) -> str:
-    if 60 % config.schedule_interval_minutes == 0:
+    # "every minute" needs no slot list (it would enumerate all sixty).
+    if config.schedule_interval_minutes > 1 and 60 % config.schedule_interval_minutes == 0:
         slots = [f":{minute:02d}" for minute in range(0, 60, config.schedule_interval_minutes)]
         return f" at {_join_text(slots)}"
     return ""

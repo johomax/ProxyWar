@@ -476,6 +476,17 @@ describe("coworldLeagueIndexHtml", () => {
     expect(html).toContain("every 30 minutes");
   });
 
+  test("a one-minute cadence reads as back-to-back rounds, not 'every 1 minutes'", () => {
+    const data = sampleData();
+    data.league.roundIntervalMinutes = 1;
+    const html = coworldLeagueIndexHtml(data);
+    expect(html).toContain("rounds run back-to-back");
+    expect(html).toContain(
+      "<span>Round cadence</span><strong>Back-to-back</strong>",
+    );
+    expect(html).not.toContain("every 1 minutes");
+  });
+
   test("computes recent form and latest match per row from the mirror's own episodes, never forcing a number when none exist", () => {
     const html = coworldLeagueIndexHtml(sampleData());
     // Auri appears (as a non-winner) in the one completed episode.
@@ -542,9 +553,7 @@ describe("coworldLeagueIndexHtml", () => {
     expect(html).toContain("<h2>Map rotation</h2>");
     expect(html).toContain('<span class="round-pill">Pangaea · Compact</span>');
     expect(html).toContain("<h2>League format</h2>");
-    expect(html).toContain(
-      "Every ~30 minutes a new round runs on the competition ladder",
-    );
+    expect(html).toContain("Rounds run back-to-back on the competition ladder");
     expect(html).toContain(
       "Qualifiers division and graduate to Competition automatically",
     );

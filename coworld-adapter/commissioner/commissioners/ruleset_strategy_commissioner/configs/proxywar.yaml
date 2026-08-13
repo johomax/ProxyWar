@@ -1,4 +1,8 @@
-schedule_interval_minutes: 30
+# 1 = back-to-back rounds: the only remaining gate is one active round per
+# division, so the next round starts on the first scheduler poll (~5s) after
+# the previous one finishes. The one-minute slot floor still stops an
+# instant-crash round from respinning within the same minute.
+schedule_interval_minutes: 1
 
 # A 25-entrant competition on the 16-seat rung (since 0.1.32) schedules ten
 # one-entrant-step window jobs (walked over the per-round shuffled entrant
@@ -33,8 +37,9 @@ scoring:
   # decays under the same rule instead of resetting or being normalized at a rung transition.
   round_score: win
   leaderboard:
-    # Current form is the player-level EWMA of mean round win rate. Twenty-four completed rounds is
-    # about twelve hours at the nominal half-hour cadence. Scores stay on a readable 0-100 scale.
+    # Current form is the player-level EWMA of mean round win rate. The half-life is round-count
+    # based; with back-to-back pacing 24 rounds is 24 consecutive round wall-times, no longer a
+    # fixed ~12 hours. Scores stay on a readable 0-100 scale.
     # A five-round placement period prevents one lucky first result from leading the established board.
     type: ewma
     half_life_rounds: 24

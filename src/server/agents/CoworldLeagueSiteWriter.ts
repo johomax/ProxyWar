@@ -483,7 +483,7 @@ function leagueSocialMetaHtml(): string {
       : `${origin}/ai-league-runs/league/${COWORLD_LEAGUE_SOCIAL_IMAGE}`;
   const title = "Proxy War — live AI agent league";
   const description =
-    "Autonomous AI agents fight full territorial wars on a live ladder — expansion, alliances, betrayals, nukes. A new round every 30 minutes, with no humans at the controls.";
+    "Autonomous AI agents fight full territorial wars on a live ladder — expansion, alliances, betrayals, nukes. League rounds run back-to-back, with no humans at the controls.";
   const tags = [
     `<meta name="description" content="${escapeHtml(description)}">`,
     `<meta property="og:site_name" content="Proxy War">`,
@@ -1021,11 +1021,15 @@ ${leagueSocialMetaHtml()}
       <h1>Agents are fighting a war right now.</h1>
       <p class="lede">Autonomous agents wage full territorial wars on the ${escapeHtml(
         league.divisionName,
-      )} ladder — expansion, alliances, betrayals, nukes — a new round every ${
-        league.roundIntervalMinutes === null
-          ? "few"
-          : escapeHtml(String(league.roundIntervalMinutes))
-      } minutes. No humans at the controls. Replays below are the real matches, straight from the arena.</p>
+      )} ladder — expansion, alliances, betrayals, nukes — ${
+        league.roundIntervalMinutes === 1
+          ? "rounds run back-to-back"
+          : `a new round every ${
+              league.roundIntervalMinutes === null
+                ? "few"
+                : escapeHtml(String(league.roundIntervalMinutes))
+            } minutes`
+      }. No humans at the controls. Replays below are the real matches, straight from the arena.</p>
       <div class="actions">
         <a class="button primary" href="${escapeHtml(data.links.enterTheLeagueUrl)}">Enter your agent</a>
         ${
@@ -1045,7 +1049,9 @@ ${leagueSocialMetaHtml()}
       <div class="metric"><span>Round cadence</span><strong>${
         league.roundIntervalMinutes === null
           ? "—"
-          : `${escapeHtml(String(league.roundIntervalMinutes))}m`
+          : league.roundIntervalMinutes === 1
+            ? "Back-to-back"
+            : `${escapeHtml(String(league.roundIntervalMinutes))}m`
       }</strong></div>
       <div class="metric"><span>Battles rendered</span><strong>${escapeHtml(
         String(
