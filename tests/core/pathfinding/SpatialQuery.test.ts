@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SpawnExecution } from "../../../src/core/execution/SpawnExecution";
 import {
   Game,
@@ -7,8 +7,11 @@ import {
   PlayerType,
 } from "../../../src/core/game/Game";
 import { TileRef } from "../../../src/core/game/GameMap";
+import { PathFinding } from "../../../src/core/pathfinding/PathFinder";
 import { SpatialQuery } from "../../../src/core/pathfinding/spatial/SpatialQuery";
 import { createGame, L, W } from "./_fixtures";
+
+afterEach(() => vi.restoreAllMocks());
 
 // Spawns player and **expands territory** via getSpawnTiles (euclidean dist 4)
 // Ref: src/core/execution/Util.ts
@@ -18,6 +21,56 @@ function addPlayer(game: Game, tile: TileRef): Player {
   game.addExecution(new SpawnExecution("game_id", info, tile));
   while (game.inSpawnPhase()) game.executeNextTick();
   return game.player(info.id);
+}
+
+function createChangingWaterGraphGame(): Game {
+  const width = 512;
+  const height = 512;
+  const grid = Array<string>(width * height).fill(W);
+  const setLand = (x: number, y: number) => {
+    grid[y * width + x] = L;
+  };
+
+  for (let y = 0; y < height; y++) {
+    setLand(256, y);
+    setLand(257, y);
+  }
+  for (let x = 258; x < width; x++) {
+    setLand(x, 256);
+    setLand(x, 257);
+  }
+  for (let y = 254; y <= 258; y++) {
+    for (let x = 64; x <= 68; x++) {
+      setLand(x, y);
+    }
+  }
+
+  return createGame(
+    { width, height, grid },
+    { disableNavMesh: false, waterNukes: true },
+  );
+}
+
+function openWaterGap(game: Game, y: number): number {
+  const previousVersion = game.waterGraphVersion();
+  for (const [x, dy] of [
+    [256, 0],
+    [257, 0],
+    [256, 1],
+  ]) {
+    game.queueWaterConversion(game.ref(x, y + dy));
+  }
+
+  for (
+    let ticks = 0;
+    ticks < 25 && game.waterGraphVersion() === previousVersion;
+    ticks++
+  ) {
+    game.executeNextTick();
+  }
+
+  expect(game.waterGraphVersion()).toBeGreaterThan(previousVersion);
+  return game.waterGraphVersion();
 }
 
 describe("SpatialQuery", () => {
@@ -225,6 +278,44 @@ describe("SpatialQuery", () => {
       expect(result).not.toBeNull();
       expect(game.isShore(result!)).toBe(true);
       expect(game.ownerID(result!)).toBe(player.smallID());
+    });
+
+    it("matches fresh queries across interleaved water graph changes", () => {
+      const game = createChangingWaterGraphGame();
+      const player = addPlayer(game, game.ref(66, 256));
+      const cached = new SpatialQuery(game);
+      const left = game.ref(200, 64);
+      const upperRight = game.ref(400, 128);
+      const lowerRight = game.ref(400, 384);
+      const waterFactory = vi.spyOn(PathFinding, "Water");
+      const query = (target: TileRef, expectedCachedBuilds = 0) => {
+        const buildsBefore = waterFactory.mock.calls.length;
+        const result = cached.closestShoreByWater(player, target);
+        expect(waterFactory.mock.calls.length - buildsBefore).toBe(
+          expectedCachedBuilds,
+        );
+        expect(result).toBe(
+          new SpatialQuery(game).closestShoreByWater(player, target),
+        );
+        return result;
+      };
+
+      expect(game.miniWaterGraph()!.nodeCount).toBeGreaterThanOrEqual(100);
+      expect(query(left, 1)).not.toBeNull();
+      expect(query(upperRight)).toBeNull();
+      expect(query(lowerRight)).toBeNull();
+
+      const firstVersion = openWaterGap(game, 384);
+      expect(query(left, 1)).not.toBeNull();
+      expect(query(lowerRight)).not.toBeNull();
+      expect(query(upperRight)).toBeNull();
+      expect(query(lowerRight)).not.toBeNull();
+
+      const secondVersion = openWaterGap(game, 128);
+      expect(secondVersion).toBeGreaterThan(firstVersion);
+      expect(query(lowerRight, 1)).not.toBeNull();
+      expect(query(left)).not.toBeNull();
+      expect(query(upperRight)).not.toBeNull();
     });
   });
 });
