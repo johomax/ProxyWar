@@ -35,6 +35,7 @@ import { MAX_WIRE_ACTIONS_PER_DECISION } from "./AgentWireProtocol";
 import {
   AgentActionResult,
   AgentBrain,
+  AgentBrainDecisionPromise,
   AgentCommunicationIntent,
   AgentCommunicationSignal,
   AgentDealSlotEvidence,
@@ -437,11 +438,21 @@ export class AgentLeagueMatchRunner {
           ...dealAwareObservation,
           objective,
         };
+        const observationSummary =
+          this.observationBuilder.summarize(observation);
+        // Dispatch only after this seat's complete observation and menu exist.
+        // The batch remains synchronous even though its result carries Promises.
+        const decisionPromise = dispatchBrainDecision({
+          brain: participant.brain,
+          observation,
+          legalActions,
+        });
         return {
           participant,
           observation,
-          observationSummary: this.observationBuilder.summarize(observation),
+          observationSummary,
           legalActions,
+          decisionPromise,
         };
       });
     const decisionInputs = this.observationBuilder.withObservationBatch(
@@ -451,12 +462,15 @@ export class AgentLeagueMatchRunner {
 
     const decisions = await Promise.all(
       decisionInputs.map(async (input) => {
+        // Preserve the existing metric and timeout origin: both begin only
+        // after every seat's observation has left the synchronous batch.
         const decisionStartedAt = Date.now();
         const decision = await decideWithSafetyFallback({
           brain: input.participant.brain,
           fallbackProfile: input.participant.spec.profile,
           observation: input.observation,
           legalActions: input.legalActions,
+          decisionPromise: input.decisionPromise,
           maxDecisionMs: options.maxDecisionMs,
         });
         return {
@@ -1539,21 +1553,43 @@ const LLM_DEGRADABLE_BRAIN_TYPES = new Set<string>([
   "llm",
 ]);
 
+function dispatchBrainDecision(input: {
+  brain: AgentBrain;
+  observation: AgentObservation;
+  legalActions: LegalAction[];
+}): AgentBrainDecisionPromise {
+  let decisionPromise: AgentBrainDecisionPromise;
+  try {
+    decisionPromise = Promise.resolve(
+      input.brain.decide({
+        observation: input.observation,
+        legalActions: input.legalActions,
+      }),
+    ) as AgentBrainDecisionPromise;
+  } catch (error) {
+    decisionPromise = Promise.reject(error);
+  }
+
+  // A later seat can still fail while its observation is being built. Attach
+  // a rejection observer immediately so an already-dispatched request cannot
+  // become unhandled before the batch exits; the original promise remains
+  // rejected for the post-batch safety fallback below.
+  void decisionPromise.catch(() => undefined);
+  return decisionPromise;
+}
+
 async function decideWithSafetyFallback(input: {
   brain: AgentBrain;
   fallbackProfile: AgentStrategyProfile;
   observation: AgentObservation;
   legalActions: LegalAction[];
+  decisionPromise: AgentBrainDecisionPromise;
   maxDecisionMs?: number;
 }): Promise<AgentDecision> {
   try {
+    input.decisionPromise.armDecisionTimeout?.();
     return await withOptionalTimeout(
-      Promise.resolve(
-        input.brain.decide({
-          observation: input.observation,
-          legalActions: input.legalActions,
-        }),
-      ),
+      input.decisionPromise,
       input.maxDecisionMs,
     );
   } catch (error) {

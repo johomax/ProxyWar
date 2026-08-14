@@ -1,5 +1,11 @@
 import {
+  createDeferredDecisionTimeout,
+  DeferredDecisionTimeout,
+  makeArmableDecisionPromise,
+} from "./AgentDecisionTimeout";
+import {
   AgentBrain,
+  AgentBrainDecision,
   AgentBrainInput,
   AgentDecision,
   AgentStrategyProfile,
@@ -9,6 +15,11 @@ import { LlmDecisionParser } from "./LlmDecisionParser";
 import { RuleAgentBrain } from "./RuleAgentBrain";
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+interface RelayRequestAttempt {
+  controller: AbortController;
+  timeout: DeferredDecisionTimeout;
+}
 
 export interface ExternalRelayAgentBrainOptions {
   relayBaseUrl: string;
@@ -39,7 +50,7 @@ export class ExternalRelayAgentBrain implements AgentBrain {
       options.fallbackBrain ?? new RuleAgentBrain(options.profile);
   }
 
-  async decide(input: AgentBrainInput): Promise<AgentDecision> {
+  decide(input: AgentBrainInput): AgentBrainDecision {
     if (input.legalActions.length === 0) {
       return {
         actionID: "",
@@ -53,9 +64,20 @@ export class ExternalRelayAgentBrain implements AgentBrain {
       };
     }
 
+    const attempt = this.requestAttempt();
+    return makeArmableDecisionPromise(
+      this.decideRequested(input, attempt),
+      attempt.timeout,
+    );
+  }
+
+  private async decideRequested(
+    input: AgentBrainInput,
+    attempt: RelayRequestAttempt,
+  ): Promise<AgentDecision> {
     let raw = "";
     try {
-      raw = await this.complete(input);
+      raw = await this.complete(input, attempt);
     } catch (error) {
       return this.fallback(
         input,
@@ -96,9 +118,10 @@ export class ExternalRelayAgentBrain implements AgentBrain {
     };
   }
 
-  private async complete(input: AgentBrainInput): Promise<string> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+  private async complete(
+    input: AgentBrainInput,
+    attempt: RelayRequestAttempt,
+  ): Promise<string> {
     try {
       const response = await this.fetchFn(this.requestUrl(), {
         method: "POST",
@@ -107,7 +130,7 @@ export class ExternalRelayAgentBrain implements AgentBrain {
           request: buildExternalAgentRequestPayload(input),
           timeoutMs: this.timeoutMs,
         }),
-        signal: controller.signal,
+        signal: attempt.controller.signal,
         redirect: "manual",
       });
       const text = await response.text();
@@ -130,8 +153,18 @@ export class ExternalRelayAgentBrain implements AgentBrain {
       }
       throw error;
     } finally {
-      clearTimeout(timeout);
+      attempt.timeout.clear();
     }
+  }
+
+  private requestAttempt(): RelayRequestAttempt {
+    const controller = new AbortController();
+    return {
+      controller,
+      timeout: createDeferredDecisionTimeout(this.timeoutMs, () => {
+        controller.abort();
+      }),
+    };
   }
 
   private requestUrl(): string {

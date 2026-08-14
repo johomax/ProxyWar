@@ -1,6 +1,12 @@
+import {
+  createDeferredDecisionTimeout,
+  DeferredDecisionTimeout,
+  makeArmableDecisionPromise,
+} from "./AgentDecisionTimeout";
 import { structuredDealsEnabled } from "./AgentTunables";
 import {
   AgentBrain,
+  AgentBrainDecision,
   AgentBrainInput,
   AgentDecision,
   AgentStrategyProfile,
@@ -15,6 +21,11 @@ import { LlmDecisionParser } from "./LlmDecisionParser";
 import { RuleAgentBrain } from "./RuleAgentBrain";
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+
+interface ExternalRequestAttempt {
+  controller: AbortController;
+  timeout: DeferredDecisionTimeout;
+}
 
 export interface ExternalHttpAgentBrainOptions {
   endpointUrl: string;
@@ -92,7 +103,7 @@ export class ExternalHttpAgentBrain implements AgentBrain {
       options.fallbackBrain ?? new RuleAgentBrain(options.profile);
   }
 
-  async decide(input: AgentBrainInput): Promise<AgentDecision> {
+  decide(input: AgentBrainInput): AgentBrainDecision {
     if (input.legalActions.length === 0) {
       return {
         actionID: "",
@@ -106,9 +117,20 @@ export class ExternalHttpAgentBrain implements AgentBrain {
       };
     }
 
+    const firstAttempt = this.requestAttempt();
+    return makeArmableDecisionPromise(
+      this.decideRequested(input, firstAttempt),
+      firstAttempt.timeout,
+    );
+  }
+
+  private async decideRequested(
+    input: AgentBrainInput,
+    firstAttempt: ExternalRequestAttempt,
+  ): Promise<AgentDecision> {
     let raw = "";
     try {
-      raw = await this.complete(input);
+      raw = await this.complete(input, firstAttempt);
     } catch (error) {
       return this.fallback(
         input,
@@ -150,11 +172,17 @@ export class ExternalHttpAgentBrain implements AgentBrain {
     };
   }
 
-  private async complete(input: AgentBrainInput): Promise<string> {
+  private async complete(
+    input: AgentBrainInput,
+    firstAttempt: ExternalRequestAttempt,
+  ): Promise<string> {
     let attempt = 0;
     while (true) {
       try {
-        return await this.completeOnce(input);
+        return await this.completeOnce(
+          input,
+          attempt === 0 ? firstAttempt : undefined,
+        );
       } catch (error) {
         if (
           attempt >= this.maxRetries ||
@@ -168,15 +196,20 @@ export class ExternalHttpAgentBrain implements AgentBrain {
     }
   }
 
-  private async completeOnce(input: AgentBrainInput): Promise<string> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+  private async completeOnce(
+    input: AgentBrainInput,
+    deferredAttempt?: ExternalRequestAttempt,
+  ): Promise<string> {
+    const attempt = deferredAttempt ?? this.requestAttempt();
+    if (deferredAttempt === undefined) {
+      attempt.timeout.arm();
+    }
     try {
       const init: RequestInit = {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify(buildExternalAgentRequestPayload(input)),
-        signal: controller.signal,
+        signal: attempt.controller.signal,
         redirect: "manual",
       };
       const response =
@@ -199,8 +232,18 @@ export class ExternalHttpAgentBrain implements AgentBrain {
       }
       throw error;
     } finally {
-      clearTimeout(timeout);
+      attempt.timeout.clear();
     }
+  }
+
+  private requestAttempt(): ExternalRequestAttempt {
+    const controller = new AbortController();
+    return {
+      controller,
+      timeout: createDeferredDecisionTimeout(this.timeoutMs, () => {
+        controller.abort();
+      }),
+    };
   }
 
   private headers(): HeadersInit {

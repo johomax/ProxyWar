@@ -1262,7 +1262,16 @@ export interface AgentBrainInput {
   legalActions: LegalAction[];
 }
 
-export type AgentBrainDecision = AgentDecision | Promise<AgentDecision>;
+export type AgentBrainDecisionPromise = Promise<AgentDecision> & {
+  /**
+   * Optional transport timeout hook for decisions dispatched during a
+   * synchronous observation batch. The runner arms it after that batch so
+   * observation work does not consume the policy's timeout window.
+   */
+  armDecisionTimeout?: () => void;
+};
+
+export type AgentBrainDecision = AgentDecision | AgentBrainDecisionPromise;
 
 export interface AgentBrain {
   readonly brainType?: AgentBrainType;

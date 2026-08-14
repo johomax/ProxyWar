@@ -1,6 +1,11 @@
+import {
+  makeArmableDecisionPromise,
+  withDeferredDecisionTimeout,
+} from "./AgentDecisionTimeout";
 import { OpponentModelLedger } from "./AgentPlannerExecutor";
 import {
   AgentBrain,
+  AgentBrainDecision,
   AgentBrainInput,
   AgentBrainType,
   AgentDecision,
@@ -48,7 +53,7 @@ export class LlmAgentBrain implements AgentBrain {
     this.parser = options.parser ?? new LlmDecisionParser({ strict: false });
   }
 
-  async decide(input: AgentBrainInput): Promise<AgentDecision> {
+  decide(input: AgentBrainInput): AgentBrainDecision {
     if (input.legalActions.length === 0) {
       return {
         actionID: "hold",
@@ -70,21 +75,46 @@ export class LlmAgentBrain implements AgentBrain {
       };
     }
 
-    // Populate theory-of-mind perception before building the prompt.
-    input.observation.opponentModel = this.opponentModelLedger.update(input);
+    let prompt: string;
+    try {
+      // Populate theory-of-mind perception before building the prompt.
+      input.observation.opponentModel = this.opponentModelLedger.update(input);
+      prompt = this.promptBuilder.build({
+        observation: input.observation,
+        legalActions: input.legalActions,
+        personality: this.options.personality,
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
-    const prompt = this.promptBuilder.build({
-      observation: input.observation,
-      legalActions: input.legalActions,
-      personality: this.options.personality,
-    });
+    let providerPromise: Promise<string>;
+    try {
+      providerPromise = Promise.resolve(this.options.provider.complete(prompt));
+    } catch (error) {
+      providerPromise = Promise.reject(error);
+    }
+    const providerTimeoutMs = this.options.providerTimeoutMs ?? 15_000;
+    const timedProvider = withDeferredDecisionTimeout(
+      providerPromise,
+      providerTimeoutMs,
+      () =>
+        new Error(`LLM provider timed out after ${providerTimeoutMs}ms`),
+    );
+    return makeArmableDecisionPromise(
+      this.decideFromProvider(input, prompt, timedProvider.promise),
+      timedProvider.timeout,
+    );
+  }
 
+  private async decideFromProvider(
+    input: AgentBrainInput,
+    prompt: string,
+    providerPromise: Promise<string>,
+  ): Promise<AgentDecision> {
     let rawOutput: string;
     try {
-      rawOutput = await withTimeout(
-        this.options.provider.complete(prompt),
-        this.options.providerTimeoutMs ?? 15_000,
-      );
+      rawOutput = await providerPromise;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return this.fallback(input, prompt, "", {
@@ -190,29 +220,4 @@ export class LlmAgentBrain implements AgentBrain {
 
 function providerIsExternal(provider: LlmProvider): boolean {
   return provider.providerType !== "mock";
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return promise;
-  }
-
-  let timeoutID: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timeoutID = setTimeout(() => {
-          reject(new Error(`LLM provider timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeoutID !== undefined) {
-      clearTimeout(timeoutID);
-    }
-  }
 }
