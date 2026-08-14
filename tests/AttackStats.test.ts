@@ -57,6 +57,27 @@ describe("AttackStats", () => {
     expect(warGoldAfter).toBe(warGoldBefore);
   });
 
+  test("conquers all remaining tiles when a small player dies mid-attack", () => {
+    const defenderTiles = Array.from(player2.tiles());
+    expect(defenderTiles.length).toBeGreaterThan(1);
+    expect(defenderTiles.length).toBeLessThan(100);
+
+    game.addExecution(
+      new AttackExecution(player1.troops(), player1, player2.id()),
+    );
+    game.executeNextTick();
+    expect(player2.isAlive()).toBe(true);
+
+    game.executeNextTick();
+
+    expect(player1.outgoingAttacks()).toHaveLength(1);
+    expect(player2.isAlive()).toBe(false);
+    expect(player2.numTilesOwned()).toBe(0);
+    expect(defenderTiles.every((tile) => game.owner(tile) === player1)).toBe(
+      true,
+    );
+  });
+
   test("should increase war gold stat when elimination occurs via territory annexation", () => {
     // Player2 must attack to be considered active (otherwise gold won't transfer)
     game.addExecution(

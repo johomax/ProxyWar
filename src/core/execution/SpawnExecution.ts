@@ -56,7 +56,9 @@ export class SpawnExecution implements Execution {
       return;
     }
 
-    player.tiles().forEach((t) => player.relinquish(t));
+    for (const tile of Array.from(player.tiles())) {
+      player.relinquish(tile);
+    }
     const spawn = this.getSpawn(this.tile);
 
     if (!spawn) {

@@ -61,6 +61,39 @@ interface Target {
   target: Player;
 }
 
+function createReadonlySetView<T>(source: Set<T>): ReadonlySet<T> {
+  function* values(): SetIterator<T> {
+    let remaining = source.size;
+    for (const value of source) {
+      if (remaining === 0) return;
+      remaining--;
+      yield value;
+    }
+  }
+
+  const view: ReadonlySet<T> = {
+    get size() {
+      return source.size;
+    },
+    has: (value) => source.has(value),
+    forEach(callback, thisArg) {
+      for (const value of values()) {
+        callback.call(thisArg, value, value, view);
+      }
+    },
+    *entries(): SetIterator<[T, T]> {
+      for (const value of values()) {
+        yield [value, value];
+      }
+    },
+    keys: values,
+    values,
+    [Symbol.iterator]: values,
+  };
+
+  return Object.freeze(view);
+}
+
 export class PlayerImpl implements Player {
   public _lastTileChange: number = 0;
   public _pseudo_random: PseudoRandom;
@@ -77,6 +110,7 @@ export class PlayerImpl implements Player {
 
   public _units: Unit[] = [];
   public _tiles: Set<TileRef> = new Set();
+  private readonly _tilesView = createReadonlySetView(this._tiles);
 
   public pastOutgoingAllianceRequests: AllianceRequest[] = [];
   private _expiredAlliances: Alliance[] = [];
@@ -319,7 +353,7 @@ export class PlayerImpl implements Player {
   }
 
   tiles(): ReadonlySet<TileRef> {
-    return new Set(this._tiles.values()) as Set<TileRef>;
+    return this._tilesView;
   }
 
   borderTiles(): ReadonlySet<TileRef> {

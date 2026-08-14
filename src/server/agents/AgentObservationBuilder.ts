@@ -1528,10 +1528,7 @@ export class AgentObservationBuilder {
     tile: number,
   ): boolean {
     // O(1) ownership lookup per neighbor (same pattern as the front-tile scans
-    // above). player.tiles() allocates a full copy of the territory set per
-    // call — doing that per neighbor inside neutralIslandTransportTiles's
-    // whole-map scan was 77% of ALL CPU on shore-dense maps (10p Britannia:
-    // profiled 250s of 321s; hosted games died at the episode deadline).
+    // above). Avoiding territory-set scans here keeps the whole-map pass cheap.
     for (const neighbor of gameState.neighbors(tile)) {
       if (gameState.owner(neighbor) === player) {
         return true;
