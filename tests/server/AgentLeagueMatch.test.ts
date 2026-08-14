@@ -279,12 +279,6 @@ describe("AgentLeagueMatchRunner", () => {
       deferredDecision("hold:first", "first held"),
       deferredDecision("hold:second", "second held"),
     ];
-    Object.assign(deferred[0].promise, {
-      armDecisionTimeout: () => events.push("timeout:Slow Agent"),
-    });
-    Object.assign(deferred[1].promise, {
-      armDecisionTimeout: () => events.push("timeout:Other Agent"),
-    });
     const participants = createAgentParticipants(
       [
         { username: "Slow Agent", profile: "opportunistic" },
@@ -362,8 +356,6 @@ describe("AgentLeagueMatchRunner", () => {
         "summary:Other Agent",
         "decide:Other Agent",
         "batch:end",
-        "timeout:Slow Agent",
-        "timeout:Other Agent",
       ]);
       expect(match.decisionRecords()).toEqual([]);
 

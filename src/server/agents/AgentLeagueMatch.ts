@@ -8,6 +8,7 @@ import {
   isDealActionKind,
   type AgentDealLedgerSnapshot,
 } from "./AgentDealManager";
+import { withDeferredDecisionTimeout } from "./AgentDecisionTimeout";
 import {
   validateAgentDealDecision,
   validateAgentDecision,
@@ -35,7 +36,6 @@ import { MAX_WIRE_ACTIONS_PER_DECISION } from "./AgentWireProtocol";
 import {
   AgentActionResult,
   AgentBrain,
-  AgentBrainDecisionPromise,
   AgentCommunicationIntent,
   AgentCommunicationSignal,
   AgentDealSlotEvidence,
@@ -1557,15 +1557,15 @@ function dispatchBrainDecision(input: {
   brain: AgentBrain;
   observation: AgentObservation;
   legalActions: LegalAction[];
-}): AgentBrainDecisionPromise {
-  let decisionPromise: AgentBrainDecisionPromise;
+}): Promise<AgentDecision> {
+  let decisionPromise: Promise<AgentDecision>;
   try {
     decisionPromise = Promise.resolve(
       input.brain.decide({
         observation: input.observation,
         legalActions: input.legalActions,
       }),
-    ) as AgentBrainDecisionPromise;
+    );
   } catch (error) {
     decisionPromise = Promise.reject(error);
   }
@@ -1583,11 +1583,10 @@ async function decideWithSafetyFallback(input: {
   fallbackProfile: AgentStrategyProfile;
   observation: AgentObservation;
   legalActions: LegalAction[];
-  decisionPromise: AgentBrainDecisionPromise;
+  decisionPromise: Promise<AgentDecision>;
   maxDecisionMs?: number;
 }): Promise<AgentDecision> {
   try {
-    input.decisionPromise.armDecisionTimeout?.();
     return await withOptionalTimeout(
       input.decisionPromise,
       input.maxDecisionMs,
@@ -1636,30 +1635,14 @@ async function withOptionalTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number | undefined,
 ): Promise<T> {
-  if (
-    timeoutMs === undefined ||
-    !Number.isFinite(timeoutMs) ||
-    timeoutMs <= 0
-  ) {
+  if (timeoutMs === undefined) {
     return promise;
   }
-
-  let timeoutID: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timeoutID = setTimeout(
-          () => reject(new Error(`Agent brain timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeoutID !== undefined) {
-      clearTimeout(timeoutID);
-    }
-  }
+  return withDeferredDecisionTimeout(
+    promise,
+    timeoutMs,
+    () => new Error(`Agent brain timed out after ${timeoutMs}ms`),
+  ).promise;
 }
 
 function groupLegalActionsByKind(

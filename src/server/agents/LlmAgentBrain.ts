@@ -1,7 +1,4 @@
-import {
-  makeArmableDecisionPromise,
-  withDeferredDecisionTimeout,
-} from "./AgentDecisionTimeout";
+import { withDeferredDecisionTimeout } from "./AgentDecisionTimeout";
 import { OpponentModelLedger } from "./AgentPlannerExecutor";
 import {
   AgentBrain,
@@ -101,10 +98,7 @@ export class LlmAgentBrain implements AgentBrain {
       () =>
         new Error(`LLM provider timed out after ${providerTimeoutMs}ms`),
     );
-    return makeArmableDecisionPromise(
-      this.decideFromProvider(input, prompt, timedProvider.promise),
-      timedProvider.timeout,
-    );
+    return this.decideFromProvider(input, prompt, timedProvider.promise);
   }
 
   private async decideFromProvider(

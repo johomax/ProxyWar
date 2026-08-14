@@ -95,10 +95,6 @@ type CoworldDecision = {
   metadata: Record<string, unknown>;
 };
 
-type CoworldDecisionPromise = Promise<CoworldDecision> & {
-  armDecisionTimeout: () => void;
-};
-
 type PendingDecision = {
   resolve: (decision: CoworldDecision) => void;
   reject: (error: Error) => void;
@@ -301,7 +297,7 @@ class CoworldProtocolServer {
     }
   }
 
-  private decide(slot: number, request: unknown): CoworldDecisionPromise {
+  private decide(slot: number, request: unknown): Promise<CoworldDecision> {
     const websocket = this.players.get(slot);
     if (websocket === undefined || websocket.readyState !== WebSocket.OPEN) {
       throw new Error(`Coworld player slot ${slot} is not connected`);
@@ -326,10 +322,12 @@ class CoworldProtocolServer {
         // envelope keys, so pre-batching policies are unaffected.
         JSON.stringify(decisionRequestEnvelope({ requestID, slot, request })),
       );
-    }) as CoworldDecisionPromise;
-    // The frame above is sent during the synchronous observation batch. The
-    // league arms this transport timer after that batch, before its own timer.
-    decisionPromise.armDecisionTimeout = () => {
+    });
+    // The frame above is sent during the league's synchronous observation
+    // batch. The microtask fires only after that batch, so the transport
+    // window excludes later seats' observation work — and always arms, even
+    // if the batch throws before the league ever awaits this promise.
+    queueMicrotask(() => {
       const pending = this.pending.get(requestID);
       if (pending === undefined || pending.timeout !== null) {
         return;
@@ -342,7 +340,7 @@ class CoworldProtocolServer {
           ),
         );
       }, timeoutMs);
-    };
+    });
     return decisionPromise;
   }
 

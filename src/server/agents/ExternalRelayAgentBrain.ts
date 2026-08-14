@@ -1,7 +1,6 @@
 import {
-  createDeferredDecisionTimeout,
-  DeferredDecisionTimeout,
-  makeArmableDecisionPromise,
+  AbortableRequestAttempt,
+  createAbortableRequestAttempt,
 } from "./AgentDecisionTimeout";
 import {
   AgentBrain,
@@ -15,11 +14,6 @@ import { LlmDecisionParser } from "./LlmDecisionParser";
 import { RuleAgentBrain } from "./RuleAgentBrain";
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
-
-interface RelayRequestAttempt {
-  controller: AbortController;
-  timeout: DeferredDecisionTimeout;
-}
 
 export interface ExternalRelayAgentBrainOptions {
   relayBaseUrl: string;
@@ -64,16 +58,16 @@ export class ExternalRelayAgentBrain implements AgentBrain {
       };
     }
 
-    const attempt = this.requestAttempt();
-    return makeArmableDecisionPromise(
-      this.decideRequested(input, attempt),
-      attempt.timeout,
-    );
+    const attempt = createAbortableRequestAttempt(this.timeoutMs);
+    // Microtask arming: the window starts only after the synchronous
+    // observation batch, so later seats' builds cannot consume it.
+    queueMicrotask(attempt.timeout.arm);
+    return this.decideRequested(input, attempt);
   }
 
   private async decideRequested(
     input: AgentBrainInput,
-    attempt: RelayRequestAttempt,
+    attempt: AbortableRequestAttempt,
   ): Promise<AgentDecision> {
     let raw = "";
     try {
@@ -120,7 +114,7 @@ export class ExternalRelayAgentBrain implements AgentBrain {
 
   private async complete(
     input: AgentBrainInput,
-    attempt: RelayRequestAttempt,
+    attempt: AbortableRequestAttempt,
   ): Promise<string> {
     try {
       const response = await this.fetchFn(this.requestUrl(), {
@@ -155,16 +149,6 @@ export class ExternalRelayAgentBrain implements AgentBrain {
     } finally {
       attempt.timeout.clear();
     }
-  }
-
-  private requestAttempt(): RelayRequestAttempt {
-    const controller = new AbortController();
-    return {
-      controller,
-      timeout: createDeferredDecisionTimeout(this.timeoutMs, () => {
-        controller.abort();
-      }),
-    };
   }
 
   private requestUrl(): string {

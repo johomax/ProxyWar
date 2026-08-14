@@ -1,7 +1,6 @@
 import {
-  createDeferredDecisionTimeout,
-  DeferredDecisionTimeout,
-  makeArmableDecisionPromise,
+  AbortableRequestAttempt,
+  createAbortableRequestAttempt,
 } from "./AgentDecisionTimeout";
 import { structuredDealsEnabled } from "./AgentTunables";
 import {
@@ -21,11 +20,6 @@ import { LlmDecisionParser } from "./LlmDecisionParser";
 import { RuleAgentBrain } from "./RuleAgentBrain";
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
-
-interface ExternalRequestAttempt {
-  controller: AbortController;
-  timeout: DeferredDecisionTimeout;
-}
 
 export interface ExternalHttpAgentBrainOptions {
   endpointUrl: string;
@@ -117,16 +111,16 @@ export class ExternalHttpAgentBrain implements AgentBrain {
       };
     }
 
-    const firstAttempt = this.requestAttempt();
-    return makeArmableDecisionPromise(
-      this.decideRequested(input, firstAttempt),
-      firstAttempt.timeout,
-    );
+    const firstAttempt = createAbortableRequestAttempt(this.timeoutMs);
+    // Microtask arming: the window starts only after the synchronous
+    // observation batch, so later seats' builds cannot consume it.
+    queueMicrotask(firstAttempt.timeout.arm);
+    return this.decideRequested(input, firstAttempt);
   }
 
   private async decideRequested(
     input: AgentBrainInput,
-    firstAttempt: ExternalRequestAttempt,
+    firstAttempt: AbortableRequestAttempt,
   ): Promise<AgentDecision> {
     let raw = "";
     try {
@@ -174,7 +168,7 @@ export class ExternalHttpAgentBrain implements AgentBrain {
 
   private async complete(
     input: AgentBrainInput,
-    firstAttempt: ExternalRequestAttempt,
+    firstAttempt: AbortableRequestAttempt,
   ): Promise<string> {
     let attempt = 0;
     while (true) {
@@ -198,9 +192,10 @@ export class ExternalHttpAgentBrain implements AgentBrain {
 
   private async completeOnce(
     input: AgentBrainInput,
-    deferredAttempt?: ExternalRequestAttempt,
+    deferredAttempt?: AbortableRequestAttempt,
   ): Promise<string> {
-    const attempt = deferredAttempt ?? this.requestAttempt();
+    const attempt =
+      deferredAttempt ?? createAbortableRequestAttempt(this.timeoutMs);
     if (deferredAttempt === undefined) {
       attempt.timeout.arm();
     }
@@ -234,16 +229,6 @@ export class ExternalHttpAgentBrain implements AgentBrain {
     } finally {
       attempt.timeout.clear();
     }
-  }
-
-  private requestAttempt(): ExternalRequestAttempt {
-    const controller = new AbortController();
-    return {
-      controller,
-      timeout: createDeferredDecisionTimeout(this.timeoutMs, () => {
-        controller.abort();
-      }),
-    };
   }
 
   private headers(): HeadersInit {
