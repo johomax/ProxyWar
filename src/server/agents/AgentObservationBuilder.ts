@@ -43,6 +43,11 @@ interface BuildTargetCandidate {
   placement: BuildPlacementAnalysis;
 }
 
+interface BoatTargetCandidate {
+  targetTile: number;
+  sourceTile?: number;
+}
+
 interface BuildPlacementAnalysis {
   isBorderBuild: boolean;
   borderDistance: number;
@@ -1074,20 +1079,23 @@ export class AgentObservationBuilder {
     }
     const troops = Math.max(1, Math.floor(player.troops() * 0.08));
     const options: AgentBoatOption[] = [];
-    const candidateTiles = this.boatTargetTiles(gameState, player);
-    for (const tile of candidateTiles) {
-      const sourceTile = player.canBuild(UnitType.TransportShip, tile);
+    const candidates = this.boatTargetTiles(gameState, player);
+    for (const candidate of candidates) {
+      const { targetTile } = candidate;
+      const sourceTile =
+        candidate.sourceTile ??
+        player.canBuild(UnitType.TransportShip, targetTile);
       if (sourceTile === false) {
         continue;
       }
-      const owner = gameState.owner(tile);
+      const owner = gameState.owner(targetTile);
       options.push({
-        targetTile: tile,
+        targetTile,
         sourceTile,
         targetID: owner.isPlayer() ? owner.id() : null,
         targetName: owner.isPlayer() ? owner.name() : "Terra Nullius",
         troops,
-        legalReason: `core canBuild(Transport, ${tile}) returned source tile ${sourceTile}`,
+        legalReason: `core canBuild(Transport, ${targetTile}) returned source tile ${sourceTile}`,
       });
       if (options.length >= 6) {
         break;
@@ -1340,12 +1348,15 @@ export class AgentObservationBuilder {
     };
   }
 
-  private boatTargetTiles(gameState: Game, player: Player): number[] {
+  private boatTargetTiles(
+    gameState: Game,
+    player: Player,
+  ): BoatTargetCandidate[] {
     const neutralIslandTiles = this.neutralIslandTransportTiles(
       gameState,
       player,
     );
-    const enemyTiles: number[] = [];
+    const enemyTiles: BoatTargetCandidate[] = [];
     const reachableWaterComponents = new Set<number>();
     for (const tile of player.borderTiles()) {
       if (!gameState.isShore(tile)) {
@@ -1382,11 +1393,11 @@ export class AgentObservationBuilder {
         }
       }
       if (reachableShore !== undefined) {
-        enemyTiles.push(reachableShore);
+        enemyTiles.push({ targetTile: reachableShore });
       }
     }
 
-    const interleavedTargets: number[] = [];
+    const interleavedTargets: BoatTargetCandidate[] = [];
     const targetCount = Math.max(neutralIslandTiles.length, enemyTiles.length);
     for (let index = 0; index < targetCount; index += 1) {
       const enemyTile = enemyTiles[index];
@@ -1398,13 +1409,22 @@ export class AgentObservationBuilder {
         interleavedTargets.push(neutralTile);
       }
     }
-    return [...new Set(interleavedTargets)].slice(0, 16);
+    const seen = new Set<number>();
+    return interleavedTargets
+      .filter(({ targetTile }) => {
+        if (seen.has(targetTile)) {
+          return false;
+        }
+        seen.add(targetTile);
+        return true;
+      })
+      .slice(0, 16);
   }
 
   private neutralIslandTransportTiles(
     gameState: Game,
     player: Player,
-  ): number[] {
+  ): BoatTargetCandidate[] {
     const shores = Array.from(player.borderTiles()).filter((tile) =>
       gameState.isShore(tile),
     );
@@ -1424,15 +1444,24 @@ export class AgentObservationBuilder {
       });
     }
 
-    return scored
+    const candidates = scored
       .sort((a, b) => a.distance - b.distance || a.tile - b.tile)
-      .slice(0, NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT)
-      .filter(
-        (candidate) =>
-          player.canBuild(UnitType.TransportShip, candidate.tile) !== false,
-      )
-      .slice(0, NEUTRAL_ISLAND_TRANSPORT_TARGET_LIMIT)
-      .map((candidate) => candidate.tile);
+      .slice(0, NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT);
+    const targets: BoatTargetCandidate[] = [];
+    for (const candidate of candidates) {
+      const sourceTile = player.canBuild(
+        UnitType.TransportShip,
+        candidate.tile,
+      );
+      if (sourceTile === false) {
+        continue;
+      }
+      targets.push({ targetTile: candidate.tile, sourceTile });
+      if (targets.length >= NEUTRAL_ISLAND_TRANSPORT_TARGET_LIMIT) {
+        break;
+      }
+    }
+    return targets;
   }
 
   private unownedNonFalloutShoreTiles(gameState: Game): readonly number[] {
