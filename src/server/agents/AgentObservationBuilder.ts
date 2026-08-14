@@ -43,11 +43,6 @@ interface BuildTargetCandidate {
   placement: BuildPlacementAnalysis;
 }
 
-interface BoatTargetCandidate {
-  targetTile: number;
-  sourceTile?: number;
-}
-
 interface BuildPlacementAnalysis {
   isBorderBuild: boolean;
   borderDistance: number;
@@ -98,8 +93,9 @@ interface BuildSearchContext {
 const DEFENSE_POST_EFFECTIVE_RANGE = 30;
 const DEFENSE_POST_FRONTIER_SEARCH_RANGE = 75;
 const NEUTRAL_ISLAND_SHORE_SAMPLE_LIMIT = 48;
-const NEUTRAL_ISLAND_TRANSPORT_TARGET_LIMIT = 10;
-const NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT = 80;
+export const BOAT_OPTION_LIMIT = 6;
+const BOAT_TARGET_TILE_LIMIT = 16;
+export const NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT = 80;
 export const BUILD_OPTION_CANDIDATES = [
   { unit: UnitType.DefensePost, role: "defensive" },
   { unit: UnitType.City, role: "economic" },
@@ -331,7 +327,8 @@ export class AgentObservationBuilder {
       strike && (strike.recommended || strike.legalStrikeActionCount > 0)
         ? `, strike=${strike.recommended ? "recommended" : "watch"} best=${strike.bestStrikeTargetStructureUnit ?? strike.bestStrikeWeapon ?? "unknown"}`
         : "";
-    const personality = observation.tacticalAffordances?.personalityDiplomacyPressure;
+    const personality =
+      observation.tacticalAffordances?.personalityDiplomacyPressure;
     const personalityText =
       personality &&
       (personality.recommended || personality.socialActionCount > 0)
@@ -424,7 +421,9 @@ export class AgentObservationBuilder {
         // (reads the ordered ally list only — no RNG/wall-clock).
         const alliedWithVisibleIds = other
           .allies()
-          .filter((ally) => ally.id() !== player.id() && ally.id() !== other.id())
+          .filter(
+            (ally) => ally.id() !== player.id() && ally.id() !== other.id(),
+          )
           .map((ally) => ally.id());
 
         return {
@@ -603,9 +602,7 @@ export class AgentObservationBuilder {
             activeTransportCount: transportStates.length,
             maximumTransportCount,
             launchSlotsRemaining,
-            blocker: gameState
-              .config()
-              .isUnitDisabled(UnitType.TransportShip)
+            blocker: gameState.config().isUnitDisabled(UnitType.TransportShip)
               ? ("transport_disabled" as const)
               : launchSlotsRemaining === 0
                 ? ("transport_cap_reached" as const)
@@ -1079,11 +1076,16 @@ export class AgentObservationBuilder {
     }
     const troops = Math.max(1, Math.floor(player.troops() * 0.08));
     const options: AgentBoatOption[] = [];
-    const candidates = this.boatTargetTiles(gameState, player);
-    for (const candidate of candidates) {
-      const { targetTile } = candidate;
+    // Per-call canBuild memo, same idiom as landStructureSpawnByTarget.
+    const transportSpawnByTarget = new Map<number, number | false>();
+    const targetTiles = this.boatTargetTiles(
+      gameState,
+      player,
+      transportSpawnByTarget,
+    );
+    for (const targetTile of targetTiles) {
       const sourceTile =
-        candidate.sourceTile ??
+        transportSpawnByTarget.get(targetTile) ??
         player.canBuild(UnitType.TransportShip, targetTile);
       if (sourceTile === false) {
         continue;
@@ -1097,7 +1099,7 @@ export class AgentObservationBuilder {
         troops,
         legalReason: `core canBuild(Transport, ${targetTile}) returned source tile ${sourceTile}`,
       });
-      if (options.length >= 6) {
+      if (options.length >= BOAT_OPTION_LIMIT) {
         break;
       }
     }
@@ -1113,8 +1115,7 @@ export class AgentObservationBuilder {
       .sort((a, b) => a.id() - b.id())
       .map((unit) => {
         const targetTile = unit.targetTile() ?? null;
-        const target =
-          targetTile === null ? null : gameState.owner(targetTile);
+        const target = targetTile === null ? null : gameState.owner(targetTile);
         return {
           unitID: unit.id(),
           status: unit.transportShipState().isRetreating
@@ -1351,12 +1352,8 @@ export class AgentObservationBuilder {
   private boatTargetTiles(
     gameState: Game,
     player: Player,
-  ): BoatTargetCandidate[] {
-    const neutralIslandTiles = this.neutralIslandTransportTiles(
-      gameState,
-      player,
-    );
-    const enemyTiles: BoatTargetCandidate[] = [];
+    transportSpawnByTarget: Map<number, number | false>,
+  ): number[] {
     const reachableWaterComponents = new Set<number>();
     for (const tile of player.borderTiles()) {
       if (!gameState.isShore(tile)) {
@@ -1367,18 +1364,20 @@ export class AgentObservationBuilder {
         reachableWaterComponents.add(component);
       }
     }
+    const neutralIslandTiles = this.neutralIslandTransportTiles(
+      gameState,
+      player,
+      reachableWaterComponents,
+      transportSpawnByTarget,
+    );
+    const enemyTiles: number[] = [];
     const enemies = gameState
       .players()
       .filter(
         (other) =>
-          other !== player &&
-          other.isAlive() &&
-          player.canAttackPlayer(other),
+          other !== player && other.isAlive() && player.canAttackPlayer(other),
       )
-      .sort(
-        (a, b) =>
-          a.troops() - b.troops() || a.id().localeCompare(b.id()),
-    );
+      .sort((a, b) => a.troops() - b.troops() || a.id().localeCompare(b.id()));
 
     for (const enemy of enemies) {
       let reachableShore: number | undefined;
@@ -1393,11 +1392,15 @@ export class AgentObservationBuilder {
         }
       }
       if (reachableShore !== undefined) {
-        enemyTiles.push({ targetTile: reachableShore });
+        enemyTiles.push(reachableShore);
+        // Interleave + slice can never consume entries past this bound.
+        if (enemyTiles.length >= BOAT_TARGET_TILE_LIMIT) {
+          break;
+        }
       }
     }
 
-    const interleavedTargets: BoatTargetCandidate[] = [];
+    const interleavedTargets: number[] = [];
     const targetCount = Math.max(neutralIslandTiles.length, enemyTiles.length);
     for (let index = 0; index < targetCount; index += 1) {
       const enemyTile = enemyTiles[index];
@@ -1409,22 +1412,15 @@ export class AgentObservationBuilder {
         interleavedTargets.push(neutralTile);
       }
     }
-    const seen = new Set<number>();
-    return interleavedTargets
-      .filter(({ targetTile }) => {
-        if (seen.has(targetTile)) {
-          return false;
-        }
-        seen.add(targetTile);
-        return true;
-      })
-      .slice(0, 16);
+    return [...new Set(interleavedTargets)].slice(0, BOAT_TARGET_TILE_LIMIT);
   }
 
   private neutralIslandTransportTiles(
     gameState: Game,
     player: Player,
-  ): BoatTargetCandidate[] {
+    reachableWaterComponents: ReadonlySet<number>,
+    transportSpawnByTarget: Map<number, number | false>,
+  ): number[] {
     const shores = Array.from(player.borderTiles()).filter((tile) =>
       gameState.isShore(tile),
     );
@@ -1432,32 +1428,62 @@ export class AgentObservationBuilder {
       return [];
     }
     const sampledShores = shores.slice(0, NEUTRAL_ISLAND_SHORE_SAMPLE_LIMIT);
-    const scored: Array<{ tile: number; distance: number }> = [];
-
+    // Bounded insertion keeps the nearest SCAN_LIMIT tiles in (distance, tile)
+    // order without allocating and sorting an entry per shore tile map-wide.
+    const candidates: Array<{ tile: number; distance: number }> = [];
     for (const tile of this.unownedNonFalloutShoreTiles(gameState)) {
       if (this.touchesOwnedTerritory(gameState, player, tile)) {
         continue;
       }
-      scored.push({
-        tile,
-        distance: nearestManhattanDistance(gameState, tile, sampledShores),
-      });
+      const distance = nearestManhattanDistance(gameState, tile, sampledShores);
+      const worst = candidates[candidates.length - 1];
+      if (
+        candidates.length >= NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT &&
+        (distance > worst.distance ||
+          (distance === worst.distance && tile > worst.tile))
+      ) {
+        continue;
+      }
+      let low = 0;
+      let high = candidates.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        const entry = candidates[mid];
+        if (
+          entry.distance < distance ||
+          (entry.distance === distance && entry.tile < tile)
+        ) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      candidates.splice(low, 0, { tile, distance });
+      if (candidates.length > NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT) {
+        candidates.pop();
+      }
     }
 
-    const candidates = scored
-      .sort((a, b) => a.distance - b.distance || a.tile - b.tile)
-      .slice(0, NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT);
-    const targets: BoatTargetCandidate[] = [];
+    const targets: number[] = [];
     for (const candidate of candidates) {
+      const component = gameState.getWaterComponent(candidate.tile);
+      if (component === null || !reachableWaterComponents.has(component)) {
+        // Exactly the condition canBuild's closestShoreByWater would reject
+        // this candidate on, minus its radius-50 BFS and border-set copy.
+        continue;
+      }
       const sourceTile = player.canBuild(
         UnitType.TransportShip,
         candidate.tile,
       );
+      transportSpawnByTarget.set(candidate.tile, sourceTile);
       if (sourceTile === false) {
         continue;
       }
-      targets.push({ targetTile: candidate.tile, sourceTile });
-      if (targets.length >= NEUTRAL_ISLAND_TRANSPORT_TARGET_LIMIT) {
+      targets.push(candidate.tile);
+      // boatOptions never rejects a validated neutral target, so successes
+      // beyond BOAT_OPTION_LIMIT could never be consumed.
+      if (targets.length >= BOAT_OPTION_LIMIT) {
         break;
       }
     }

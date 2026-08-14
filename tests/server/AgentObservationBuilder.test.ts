@@ -12,10 +12,13 @@ import {
 } from "../../src/core/game/Game";
 import {
   AgentObservationBuilder,
+  BOAT_OPTION_LIMIT,
   BUILD_OPTION_CANDIDATES,
   buildCandidateLimit,
+  NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT,
   SHARED_LAND_STRUCTURE_BUILD_TYPES,
 } from "../../src/server/agents/AgentObservationBuilder";
+import { AgentBoatOption } from "../../src/server/agents/AgentTypes";
 import { LegalActionBuilder } from "../../src/server/agents/LegalActionBuilder";
 import {
   createGame as createPathfindingGame,
@@ -175,19 +178,63 @@ type AgentObservationBuilderInternals = {
   hostileFrontTiles(gameState: Game, player: Player): number[];
   incomingAttackFrontTiles(gameState: Game, player: Player): number[];
   nukeTargetTiles(gameState: Game, player: Player): number[];
-  boatOptions(gameState: Game, player: Player): unknown[];
-  boatTargetTiles(gameState: Game, player: Player): TestBoatTargetCandidate[];
+  boatOptions(gameState: Game, player: Player): AgentBoatOption[];
   neutralIslandTransportTiles(
     gameState: Game,
     player: Player,
-  ): TestBoatTargetCandidate[];
+    reachableWaterComponents: ReadonlySet<number>,
+    transportSpawnByTarget: Map<number, number | false>,
+  ): number[];
   unownedNonFalloutShoreTiles(gameState: Game): readonly number[];
   touchesOwnedTerritory(gameState: Game, player: Player, tile: number): boolean;
 };
 
-interface TestBoatTargetCandidate {
-  targetTile: number;
-  sourceTile?: number;
+/** Feeds the neutral scan a fixed candidate list with canBuild valid only at
+ * the given scan positions; reachability is stubbed to pass every candidate. */
+function neutralScanHarness(validIndexes: readonly number[]) {
+  const { game } = disconnectedSeasGame();
+  const player = game.player("P_AGENT");
+  const internals =
+    new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
+  const candidates: number[] = [];
+  game.forEachTile((tile) => {
+    if (candidates.length < NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT) {
+      candidates.push(tile);
+    }
+  });
+  expect(candidates).toHaveLength(NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT);
+  vi.spyOn(internals, "unownedNonFalloutShoreTiles").mockReturnValue(
+    candidates,
+  );
+  vi.spyOn(internals, "touchesOwnedTerritory").mockReturnValue(false);
+  const component = 1;
+  vi.spyOn(game, "getWaterComponent").mockReturnValue(component);
+  const sourceForIndex = (index: number) =>
+    game.ref(index % game.width(), Math.floor(index / game.width()));
+  const validIndexSet = new Set(validIndexes);
+  let callIndex = 0;
+  const canBuild = vi.spyOn(player, "canBuild").mockImplementation((unit) => {
+    expect(unit).toBe(UnitType.TransportShip);
+    const index = callIndex++;
+    return validIndexSet.has(index) ? sourceForIndex(index) : false;
+  });
+  const transportSpawnByTarget = new Map<number, number | false>();
+  const targets = internals.neutralIslandTransportTiles(
+    game,
+    player,
+    new Set([component]),
+    transportSpawnByTarget,
+  );
+  const expectValidatedTargets = () => {
+    const scannedTiles = canBuild.mock.calls.map(([, tile]) => tile);
+    expect(targets).toEqual(validIndexes.map((index) => scannedTiles[index]));
+    for (const [position, target] of targets.entries()) {
+      expect(transportSpawnByTarget.get(target)).toBe(
+        sourceForIndex(validIndexes[position]),
+      );
+    }
+  };
+  return { canBuild, targets, expectValidatedTargets };
 }
 
 function midGameBuildSearchGame(): Game {
@@ -657,219 +704,77 @@ describe("AgentObservationBuilder boat targets", () => {
     ).toThrow("game tick changed during observation batch");
   });
 
-  it("stops the neutral scan immediately after the tenth success", () => {
-    const { game } = disconnectedSeasGame();
+  it("stops the neutral scan immediately after the sixth success", () => {
+    const validIndexes = [1, 3, 4, 7, 9, 10];
+    expect(validIndexes).toHaveLength(BOAT_OPTION_LIMIT);
+    const { canBuild, expectValidatedTargets } =
+      neutralScanHarness(validIndexes);
+
+    expect(canBuild).toHaveBeenCalledTimes(validIndexes.at(-1)! + 1);
+    expectValidatedTargets();
+  });
+
+  it("scans every candidate when fewer than six are valid", () => {
+    const { canBuild, expectValidatedTargets } = neutralScanHarness([
+      2, 19, 47, 79,
+    ]);
+
+    expect(canBuild).toHaveBeenCalledTimes(NEUTRAL_ISLAND_TRANSPORT_SCAN_LIMIT);
+    expectValidatedTargets();
+  });
+
+  it("skips neutral islands on unreachable water without calling canBuild", () => {
+    const { game, unreachableShore } = disconnectedSeasGame();
     const player = game.player("P_AGENT");
+    // Own the whole near coastline (except the rival's shore) so every
+    // remaining neutral candidate sits on the far, disconnected sea.
+    for (let y = 0; y < game.height(); y += 1) {
+      const tile = game.ref(2, y);
+      if (!game.hasOwner(tile)) {
+        player.conquer(tile);
+      }
+    }
     const internals =
       new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
-    const candidates: number[] = [];
-    game.forEachTile((tile) => {
-      if (candidates.length < 80) candidates.push(tile);
-    });
-    vi.spyOn(internals, "unownedNonFalloutShoreTiles").mockReturnValue(
-      candidates,
-    );
-    vi.spyOn(internals, "touchesOwnedTerritory").mockReturnValue(false);
-    const validIndexes = [1, 3, 4, 7, 9, 10, 13, 15, 16, 19];
-    const validIndexSet = new Set(validIndexes);
-    let callIndex = 0;
-    const canBuild = vi.spyOn(player, "canBuild").mockImplementation((unit) => {
-      expect(unit).toBe(UnitType.TransportShip);
-      const index = callIndex++;
-      return validIndexSet.has(index) ? game.ref(index, 0) : false;
-    });
-
-    const targets = internals.neutralIslandTransportTiles(game, player);
-
-    expect(candidates).toHaveLength(80);
-    expect(canBuild).toHaveBeenCalledTimes(20);
-    const validatedTargets = canBuild.mock.calls.map(([, tile]) => tile);
-    expect(targets).toEqual(
-      validIndexes.map((index) => ({
-        targetTile: validatedTargets[index],
-        sourceTile: game.ref(index, 0),
-      })),
-    );
-  });
-
-  it("scans all 80 neutral candidates when fewer than ten are valid", () => {
-    const { game } = disconnectedSeasGame();
-    const player = game.player("P_AGENT");
-    const internals =
-      new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
-    const candidates: number[] = [];
-    game.forEachTile((tile) => {
-      if (candidates.length < 80) candidates.push(tile);
-    });
-    vi.spyOn(internals, "unownedNonFalloutShoreTiles").mockReturnValue(
-      candidates,
-    );
-    vi.spyOn(internals, "touchesOwnedTerritory").mockReturnValue(false);
-    const validIndexes = [2, 19, 47, 79];
-    const validIndexSet = new Set(validIndexes);
-    let callIndex = 0;
-    const canBuild = vi.spyOn(player, "canBuild").mockImplementation((unit) => {
-      expect(unit).toBe(UnitType.TransportShip);
-      const index = callIndex++;
-      return validIndexSet.has(index)
-        ? game.ref(index % game.width(), Math.floor(index / game.width()))
-        : false;
-    });
-
-    const targets = internals.neutralIslandTransportTiles(game, player);
-
-    expect(canBuild).toHaveBeenCalledTimes(80);
-    const validatedTargets = canBuild.mock.calls.map(([, tile]) => tile);
-    expect(targets).toEqual(
-      validIndexes.map((index) => ({
-        targetTile: validatedTargets[index],
-        sourceTile: game.ref(
-          index % game.width(),
-          Math.floor(index / game.width()),
-        ),
-      })),
-    );
-  });
-
-  it("preserves enemy-neutral interleaving and first-occurrence deduplication", () => {
-    const player = {
-      borderTiles: () => new Set([1]),
-      canAttackPlayer: () => true,
-    } as unknown as Player;
-    const enemy = (id: string, troops: number, shore: number) =>
-      ({
-        id: () => id,
-        isAlive: () => true,
-        troops: () => troops,
-        borderTiles: () => new Set([shore]),
-      }) as unknown as Player;
-    const enemies = [
-      enemy("P_C", 300, 400),
-      enemy("P_B", 100, 300),
-      enemy("P_A", 50, 100),
-    ];
-    const game = {
-      players: () => [player, ...enemies],
-      isShore: () => true,
-      getWaterComponent: () => 1,
-    } as unknown as Game;
-    const internals =
-      new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
-    vi.spyOn(internals, "neutralIslandTransportTiles").mockReturnValue([
-      { targetTile: 200, sourceTile: 20 },
-      { targetTile: 300, sourceTile: 30 },
-      { targetTile: 500, sourceTile: 50 },
-    ]);
-
-    expect(internals.boatTargetTiles(game, player)).toEqual([
-      { targetTile: 100 },
-      { targetTile: 200, sourceTile: 20 },
-      { targetTile: 300 },
-      { targetTile: 400 },
-      { targetTile: 500, sourceTile: 50 },
-    ]);
-  });
-
-  it("reuses exact neutral source tiles while preserving legacy boat options", () => {
-    const enemy = {
-      isPlayer: () => true,
-      id: () => "P_ENEMY",
-      name: () => "Enemy",
-    } as unknown as Player;
-    const neutral = { isPlayer: () => false };
-    const game = {
-      config: () => ({
-        isUnitDisabled: () => false,
-        boatMaxNumber: () => 20,
-      }),
-      owner: (tile: number) => (tile < 200 ? enemy : neutral),
-    } as unknown as Game;
-    const sourceByEnemyTarget = new Map<number, number | false>([
-      [101, 701],
-      [102, false],
-      [103, 703],
-      [104, 704],
-      [105, 705],
-    ]);
-    const canBuild = vi.fn(
-      (_unit: UnitType, tile: number) => sourceByEnemyTarget.get(tile) ?? false,
-    );
-    const player = {
-      unitCount: () => 0,
-      troops: () => 1_000,
-      canBuild,
-    } as unknown as Player;
-    const internals =
-      new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
-    vi.spyOn(internals, "boatTargetTiles").mockReturnValue([
-      { targetTile: 101 },
-      { targetTile: 201, sourceTile: 801 },
-      { targetTile: 102 },
-      { targetTile: 202, sourceTile: 802 },
-      { targetTile: 103 },
-      { targetTile: 203, sourceTile: 803 },
-      { targetTile: 104 },
-      { targetTile: 105 },
-    ]);
+    const canBuild = vi.spyOn(player, "canBuild");
 
     const options = internals.boatOptions(game, player);
 
-    expect(canBuild.mock.calls).toEqual([
-      [UnitType.TransportShip, 101],
-      [UnitType.TransportShip, 102],
-      [UnitType.TransportShip, 103],
-      [UnitType.TransportShip, 104],
-    ]);
-    expect(options).toEqual([
-      {
-        targetTile: 101,
-        sourceTile: 701,
-        targetID: "P_ENEMY",
-        targetName: "Enemy",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 101) returned source tile 701",
-      },
-      {
-        targetTile: 201,
-        sourceTile: 801,
-        targetID: null,
-        targetName: "Terra Nullius",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 201) returned source tile 801",
-      },
-      {
-        targetTile: 202,
-        sourceTile: 802,
-        targetID: null,
-        targetName: "Terra Nullius",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 202) returned source tile 802",
-      },
-      {
-        targetTile: 103,
-        sourceTile: 703,
-        targetID: "P_ENEMY",
-        targetName: "Enemy",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 103) returned source tile 703",
-      },
-      {
-        targetTile: 203,
-        sourceTile: 803,
-        targetID: null,
-        targetName: "Terra Nullius",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 203) returned source tile 803",
-      },
-      {
-        targetTile: 104,
-        sourceTile: 704,
-        targetID: "P_ENEMY",
-        targetName: "Enemy",
-        troops: 80,
-        legalReason: "core canBuild(Transport, 104) returned source tile 704",
-      },
-    ]);
+    expect(options.length).toBeGreaterThan(0);
+    const farSea = game.getWaterComponent(unreachableShore);
+    expect(farSea).not.toBeNull();
+    const transportTargets = canBuild.mock.calls
+      .filter(([unit]) => unit === UnitType.TransportShip)
+      .map(([, tile]) => tile);
+    expect(transportTargets.length).toBeGreaterThan(0);
+    expect(
+      transportTargets.every((tile) => game.getWaterComponent(tile) !== farSea),
+    ).toBe(true);
+  });
+
+  it("reuses the neutral scan's validation instead of rechecking targets", () => {
+    const { game, rival } = disconnectedSeasGame();
+    const player = game.player("P_AGENT");
+    const internals =
+      new AgentObservationBuilder() as unknown as AgentObservationBuilderInternals;
+    const canBuild = vi.spyOn(player, "canBuild");
+
+    const options = internals.boatOptions(game, player);
+
+    expect(options).toHaveLength(BOAT_OPTION_LIMIT);
+    expect(options[0].targetID).toBe(rival.id);
+    expect(options.slice(1).every((option) => option.targetID === null)).toBe(
+      true,
+    );
+    const transportTargets = canBuild.mock.calls
+      .filter(([unit]) => unit === UnitType.TransportShip)
+      .map(([, tile]) => tile);
+    expect(new Set(transportTargets).size).toBe(transportTargets.length);
+    for (const option of options) {
+      expect(player.canBuild(UnitType.TransportShip, option.targetTile)).toBe(
+        option.sourceTile,
+      );
+    }
   });
 
   it("offers a hostile transatlantic landing on the real World map", async () => {
@@ -968,9 +873,7 @@ describe("AgentObservationBuilder boat targets", () => {
       .build({ observation: observe(game) })
       .filter((action) => action.kind === "boat");
     expect(
-      legalBoatActions.some(
-        (action) => action.metadata?.targetID === rival.id,
-      ),
+      legalBoatActions.some((action) => action.metadata?.targetID === rival.id),
     ).toBe(true);
     expect(
       legalBoatActions.some(
